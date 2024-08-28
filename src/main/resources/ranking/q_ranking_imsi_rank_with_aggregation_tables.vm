@@ -1,0 +1,121 @@
+##=============================================================================
+##
+## IMSI Ranking towards aggregation tables
+##
+## Description:
+##
+##    Provide the top n IMSIs based on failures, whether the subscriber is VIP or not need to be diplayed too
+##
+## Velocity Parameter:
+##  
+## timerange : one of { TR_3, TR_4}
+##  
+##     TR_3 : normally query against 15min agg
+##     TR_4 : normally query against daily agg
+##
+## count: top N IMSI
+## techPackTables: see TechPackTables POJO
+##
+## Named PreparedStatement Parameter:
+##
+##    :dateFrom   starting time
+##    :dateTo     ending time
+##
+##=============================================================================
+
+#set($time = $ApplicationMethods.returnAggregateViewType(${timerange}))
+
+begin
+
+select
+#if($count > 0)
+	top $count
+#end 
+* into #temp_imsi_ranking_table from (
+  select
+    IMSI,
+    sum(isnull(noOfErrors, 0)) as NO_OF_ERRORS
+  from
+  (
+    #foreach($techPack in $TECH_PACK_LIST.getTechPacks())
+      select 
+        IMSI,
+        sum(NO_OF_ERRORS) as noOfErrors
+      from 
+        dc.${techPack.getName()}_IMSI_RANK$time
+      where
+        #GET_DATETIME_RANGE()
+      and 
+        IMSI <> 0
+      group by
+            IMSI
+      #if($velocityCount < $TECH_PACK_LIST.getTechPacks().size())
+        union all
+      #end
+    #end
+  ) as ranking_tables(IMSI,noOfErrors)
+    group by IMSI
+)as temp
+ORDER BY NO_OF_ERRORS DESC;
+
+select * into #temp_imsi_suc_RAW from (
+select IMSI, SUM(noOfSuccesses) AS NO_OF_SUCCESSES from
+    (
+    #foreach($table in $TECH_PACK_LIST.getAllRawTablesWithMeasurementType())
+    SELECT
+		IMSI,
+		SUM(NO_OF_SUCCESSES) AS noOfSuccesses
+	FROM dc.$table
+    where
+         #if ($timerange=="TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+        #else
+            #GET_DATETIME_RANGE()
+        #end
+        AND #GET_TAC_EXCLUSION()
+        AND IMSI in (SELECT IMSI from #temp_imsi_ranking_table)
+    group by
+            IMSI
+        #if($velocityCount < $TECH_PACK_LIST.getAllRawTablesWithMeasurementType().size())
+        union all
+        #end
+    #end
+    )  as temp_imsi(IMSI,noOfSuccesses)
+    group by IMSI
+)as temp;
+
+#if($csv == true)
+ SET TEMPORARY OPTION Temp_Extract_Name1 = 'csvFileName' ;
+#end
+
+select
+    #if($count > 0)
+	  top $count
+	#end
+    rank() over (order by NO_OF_ERRORS desc) as RANK,
+    err.IMSI,
+    NO_OF_ERRORS,
+    isnull(NO_OF_SUCCESSES,0) as NO_OF_SUCCESSES
+from
+    (
+		SELECT
+        	IMSI,
+            SUM(NO_OF_ERRORS) as NO_OF_ERRORS
+        from #temp_imsi_ranking_table
+        GROUP BY
+        IMSI
+    ) AS err (IMSI ,NO_OF_ERRORS)
+    left outer join
+    (
+    	SELECT
+            IMSI,
+            SUM(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+         from #temp_imsi_suc_RAW
+        GROUP BY
+            IMSI
+    ) AS suc( IMSI, NO_OF_SUCCESSES )
+ on(err.IMSI = suc.IMSI)
+order by
+  RANK;
+
+end

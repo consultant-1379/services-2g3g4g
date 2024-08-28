@@ -1,0 +1,104 @@
+##=============================================================================
+##
+## Data volume Ranking
+##
+## Description: 
+## Data volume Ranking query that queries the aggregation/raw tables for ranking results
+##  
+## Velocity parameter:
+##
+## type : one of { TAC,APN,IMSI,SGSN,GGSN }
+##  
+## count : number of rows returned
+## techPackTables: see javadoc on TechPackTables
+## 
+##
+## ## Named PreparedStatement Parameter:
+##
+##    :dateFrom - starting time
+##    :dateTo - ending time
+## 
+##=============================================================================
+
+#DEFINE_CONSTANTS()
+#if(${type}==$TYPE_IMSI)
+    #set($tpUnit = 1024)
+#else
+    #set($tpUnit = 1048576)
+#end
+#foreach($techPack in $techPackTables.getTechPacks())
+    #set($dtTables=$techPack.getDtTables())
+#end
+
+#set($dtSelectColumns = [])
+#foreach ($column in $columnsForDtQuery)
+    #if ( $velocityCount <= 1)
+            #set($isAdded = $dtSelectColumns.add($column))
+            #set($isAdded = $dtSelectColumns.add("DATAVOL_DL"))
+            #set($isAdded = $dtSelectColumns.add("DATAVOL_UL"))
+            #else
+            #set($isAdded = $dtSelectColumns.add($column))
+    #end
+#end
+
+select
+    #if($count > 0)
+      top $count
+    #end
+    rank() over (order by TOTAL_DATAVOL desc) as RANK,
+    #if (${type}==$TYPE_TAC)
+    tac.MANUFACTURER as MANUFACTURER, 
+    tac.Marketing_Name as Marketing_Name,
+
+    #end
+
+    #GET_COLUMNS_BY_TABLE('temp_dt' $columnsForDtQuery)
+    TOTAL_DATAVOL_DL+TOTAL_DATAVOL_UL as TOTAL_DATAVOL,
+    convert(numeric(16,2), SUM(convert(numeric(16,2), temp_dt.DATAVOL_DL)/$tpUnit)) as TOTAL_DATAVOL_DL,
+    convert(numeric(16,2), SUM(convert(numeric(16,2), temp_dt.DATAVOL_UL)/$tpUnit)) as TOTAL_DATAVOL_UL
+from
+    #if($useAggregationTables)
+        $dtTables temp_dt
+    #else
+
+        #REPLACE_RAW_VIEW_WITH_RAW_TABLES_WITH_TAC_EXCLUSION_SPECIFY_COLUMNS($dtTables "temp_dt" $dtSelectColumns)
+
+    #end
+    #if (${type}==$TYPE_TAC)
+    left outer join
+        dc.DIM_E_SGEH_TAC tac
+    on(
+        temp_dt.TAC = tac.TAC
+    )
+    #elseif(${type}==$TYPE_APN)
+         inner join
+    (select
+        APN
+    from
+        dc.DIM_E_SGEH_APN 
+    where
+        LAST_SEEN >= :dateFromForApnRetention 
+    group by
+        APN
+    )as validapn(
+        APN)
+    on(
+        temp_dt.APN = validapn.APN
+    )
+
+    #end
+where
+    #if($useAggregationTables)
+        #GET_DATETIME_RANGE_BY_TABLE ("temp_dt")
+        and 
+    #end
+
+    #GET_NOT_NULL_COLUMNS_WHERE("temp_dt" $columnsForDtQuery)
+
+group by
+    #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING("temp_dt" $columnsForDtQuery)
+    #if (${type}==$TYPE_TAC)
+    ,TAC.MANUFACTURER
+    ,TAC.Marketing_Name
+
+    #end

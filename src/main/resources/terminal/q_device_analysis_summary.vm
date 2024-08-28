@@ -1,0 +1,132 @@
+##
+## Device Analysis - device types summary
+##
+## Description: 
+##
+##     Get the device types summary
+##
+## Velocity Parameter: 
+##
+## AGGREGATION_TABLES : a TechPackTables object containing the Aggregation views applicable for time range
+## RAW_TABLES : a TechPackTables object containing the Raw tables applicable for this time range
+## useAggregationTables : a boolean indicating whether to use the aggregation tables or raw tables 
+## for error/success part of the query
+##
+## count : number of the top<> most popular device types
+##
+## Named PreparedStatement Parameter:
+##
+##    :dateFrom - starting time
+##    :dateTo - ending time
+##    :TAC - nominated TAC
+##
+## Scenarios:
+##
+##  1. Device summary
+##  
+##     timerange
+##     :dateFrom   :dateTo   :TAC
+##
+##  2. Most popular device summary
+## 
+##     timerange, count
+##     :dateFrom   :dateTo
+##
+
+#DEFINE_CONSTANTS()
+
+#macro(SUM_TAC_SUCCESS $aggTables)
+    ##need to sum on the union of the sums from the aggregation tables (otherwise get duplicate results
+    ##on joining these results with the success counts from the subquery below)
+    select
+    TAC,
+    sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from (
+        #foreach ($aggView in $aggTables.getSucTables())
+            #SUM_TACS_FROM_AGGREGATION_VIEW($aggView "NO_OF_SUCCESSES")
+            #if ( $velocityCount < $aggTables.getSucTables().size())
+            union all
+            #end
+        #end
+    ) as total_successes(TAC, NO_OF_SUCCESSES)
+    group by
+    TAC
+#end
+
+#macro(SUM_TACS_FROM_AGGREGATION_VIEW $view $columnToSum)
+select
+TAC,
+sum($columnToSum)
+from
+    $view
+where
+    #GET_DATETIME_RANGE()
+    and #GET_TAC_EXCLUSION()
+group by
+TAC
+#end
+
+#macro(SUM_TAC_ERRORS $shouldUseAggregationTables $aggTables $rawTables)
+    #if($shouldUseAggregationTables)
+    ##need to sum on the union of the sums from the aggregation tables (otherwise get duplicate results
+    ##on joining these results with the success counts from the subquery below)
+    select
+    TAC,
+    sum(NO_OF_ERRORS) as NO_OF_ERRORS
+    from (
+        #foreach ($aggView in $aggTables.getErrTables())
+            #SUM_TACS_FROM_AGGREGATION_VIEW($aggView "NO_OF_ERRORS")
+            #if ( $velocityCount < $aggTables.getErrTables().size())
+            union all
+            #end
+        #end
+    ) as total_errors(TAC, NO_OF_ERRORS)
+    group by
+    TAC
+    #else
+    select
+    TAC,
+    count(*)
+    from
+        #REPLACE_RAW_VIEW_WITH_RAW_TABLES_WITH_TAC_EXCLUSION_SPECIFY_COLUMNS($rawTables.getErrTables() "temp_err" ["TAC"])
+    group by
+    TAC
+    #end
+#end
+
+select
+    #if($count > 0)
+     top $count
+   #end
+    rank() over (order by OCCURRENCES desc) as RANK,             
+    isnull(err.TAC, suc.TAC) as TAC,
+    isnull(tacref.MANUFACTURER, convert(varchar(12),TAC)) as MANUFACTURER,
+    isnull(tacref.Marketing_Name, convert(varchar(12),TAC)) as Marketing_Name,
+    sum(isnull(NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+    NO_OF_ERRORS+NO_OF_SUCCESSES as OCCURRENCES,
+    #CALCULATE_KPI_RATIO() AS KPI,
+   tacref.Band as Band
+from
+    (
+      #SUM_TAC_ERRORS($useAggregationTables $AGGREGATION_TABLES $RAW_TABLES)
+    ) as err(TAC, NO_OF_ERRORS)
+    full outer join
+    (
+        #SUM_TAC_SUCCESS($AGGREGATION_TABLES)
+    ) as suc(TAC, NO_OF_SUCCESSES)
+    on(
+        suc.TAC = err.TAC
+    )
+    left outer join
+    dc.DIM_E_SGEH_TAC tacref
+    on(
+        tacref.TAC=isnull(suc.TAC, err.TAC)
+    )
+group by
+    TAC,
+    MANUFACTURER,
+    MARKETING_NAME,
+   Band
+order by
+    RANK

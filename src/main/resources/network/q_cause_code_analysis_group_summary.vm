@@ -1,0 +1,451 @@
+##=============================================================================
+##
+## Network Cause code Analysis : group failure summary analysis
+##
+## Description:
+##
+##    Failure analysis for nominated group
+##
+## Parameter:
+##
+## type : one of { APN, TAC}
+##
+## timerange : one of { TR_1, TR_2, TR_3, TR_4}
+##
+##     TR_1 : normally query against raw events
+##     TR_2 : normally query against 1min agg
+##     TR_3 : normally query against 15min agg
+##     TR_4 : normally query against daily agg
+##
+## Named PreparedStatement Parameter:
+##
+##    :dateFrom   starting time
+##    :dateTo     ending time
+##    :GROUP_NAME nominated group name
+##
+## @TODO - refactoring required here - template to split into two new templates, one that queries the raw tables
+## and one that queries the aggregation tables.  TechPackTables object should be used to to populate the tables and views, 
+## and all business logic to be moved up into the java layer
+##
+##=============================================================================
+#DEFINE_CONSTANTS()
+#SET_GROUP_TYPE($type)
+
+#set($time = $ApplicationMethods.returnAggregateViewType($timerange))
+
+#set($groupDef = $groupDefinitions.get(${groupType}))
+#set($groupTable = $groupDef.getTableName())
+#set($groupnameColumn = $groupDef.getGroupNameColumn())
+#set($joinKeys = $groupDef.getGroupKeys())
+
+#set($errTables=$techPackTables.getErrTables())
+#set($joinCols=[$CAUSE_PROT_TYPE,$CAUSE_CODE,$SUBCAUSE_CODE,$IMSI])
+#set($cptRefForSgeh="DIM_E_SGEH_CAUSE_PROT_TYPE")
+#set($cptRefForLte="DIM_E_LTE_CAUSE_PROT_TYPE")
+#set($useNonLteTables=true)
+#set($useLteTables=true)
+
+#set($ccRefForSgeh="dc.DIM_E_SGEH_CAUSECODE")
+#set($ccRefForLte="dc.DIM_E_LTE_CAUSECODE")
+#set($sccRefForSgeh="dc.DIM_E_SGEH_SUBCAUSECODE")
+#set($sccRefForLte="dc.DIM_E_LTE_SUBCAUSECODE")
+
+#set($RAT_SGEH = '2G/3G')
+#set($RAT_LTE = '4G')
+
+#macro(CCAGS_SINGLE_AGG_SUB_QUERY $columnsToInclude $tableToUseInQuery)
+
+    #foreach ($table in $tableToUseInQuery)        
+
+        #if ( $velocityCount > 1)
+            union all
+        #end
+        select 
+
+            #if ($tableToUseInQuery == $rawNonLteTables)
+                '$RAT_SGEH' AS TECHNOLOGY,
+            #else
+               '$RAT_LTE' AS TECHNOLOGY,
+            #end
+            $groupnameColumn, #GET_COLUMNS_NO_COMMA_TRAILING($columnsToInclude)
+        from
+            dc.$table rawRef,
+            dc.$groupTable temp_group
+        where
+            #if ($timerange == "TR_4")
+                #GET_DATE_RANGE_LOCAL()
+            #else
+                #GET_DATETIME_RANGE()
+            #end
+            and #GET_JOIN("rawRef" "temp_group" $joinKeys)
+            and temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+            and #GET_TAC_EXCLUSION()
+    #end
+#end
+
+#macro(CCAGS_SINGLE_AGG_SUB_QUERY_FOR_APN $columnsToInclude $tableToUseInQuery)
+
+    #foreach ($table in $tableToUseInQuery)        
+        #if ( $velocityCount > 1)
+            union all
+        #end
+        select 
+            #if ($tableToUseInQuery == $rawNonLteTables)
+                '$RAT_SGEH' AS TECHNOLOGY,
+            #else
+               '$RAT_LTE' AS TECHNOLOGY,
+            #end
+            #GET_COLUMNS_NO_COMMA_TRAILING($columnsToInclude)
+        from
+            dc.$table rawRef
+        where
+            #if ($timerange == "TR_4")
+                #GET_DATE_RANGE_LOCAL()
+            #else
+                #GET_DATETIME_RANGE()
+            #end
+            AND rawRef.$joinKeys.get(0) in (SELECT $joinKeys.get(0) from dc.$groupTable temp_group where temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM)
+            and #GET_TAC_EXCLUSION()
+            group by #GET_COLUMNS_NO_COMMA_TRAILING($columnsToInclude)
+    #end
+#end
+
+#macro(CCAGS_SINGLE_AGG_QUERY $errTable $cptTable  $ccTable $sccTable $isLte)
+
+(select TECHNOLOGY, errAdvice.CAUSE_PROT_TYPE, errAdvice.CAUSE_PROT_TYPE_DESC, errAdvice.CAUSE_CODE, errAdvice.CAUSE_CODE_DESC,errAdvice.CAUSE_CODE_HELP, errAdvice.SUBCAUSE_CODE, errAdvice.SUBCAUSE_CODE_DESC,
+errAdvice.NO_OF_ERRORS, errAdvice.SUBCAUSE_CODE_HELP as ADVICE from 
+(select    
+    #if($isLte)  
+        '$RAT_LTE' AS TECHNOLOGY, 
+    #else
+        '$RAT_SGEH' AS TECHNOLOGY,
+    #end
+
+errRef.CAUSE_PROT_TYPE, cptref.CAUSE_PROT_TYPE_DESC, errRef.CAUSE_CODE, CAUSE_CODE_DESC,CAUSE_CODE_HELP, errRef.SUBCAUSE_CODE, SUBCAUSE_CODE_DESC, SUBCAUSE_CODE_HELP, sum(NO_OF_ERRORS)
+
+    from
+        dc.$errTable errRef,
+        $ccTable ccref,
+        $sccTable sccref,
+        dc.$cptTable cptref,
+        dc.$groupTable temp_group
+    where
+        #GET_DATETIME_RANGE()
+        and #GET_JOIN("errRef" "temp_group" $joinKeys)
+        and temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+        and errRef.CAUSE_PROT_TYPE *= cptref.CAUSE_PROT_TYPE 
+        and errRef.CAUSE_CODE *= ccref.CAUSE_CODE 
+        and errRef.SUBCAUSE_CODE *= sccref.SUBCAUSE_CODE 
+        and errRef.CAUSE_PROT_TYPE *= ccref.CAUSE_PROT_TYPE
+    group by
+
+	    TECHNOLOGY,
+
+        errRef.CAUSE_CODE,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP,
+        errRef.SUBCAUSE_CODE,
+        SUBCAUSE_CODE_DESC,
+        SUBCAUSE_CODE_HELP,
+        errRef.CAUSE_PROT_TYPE,
+        CAUSE_PROT_TYPE_DESC
+    )
+
+    as errAdvice(TECHNOLOGY,CAUSE_PROT_TYPE, CAUSE_PROT_TYPE_DESC, CAUSE_CODE, CAUSE_CODE_DESC,CAUSE_CODE_HELP, SUBCAUSE_CODE, SUBCAUSE_CODE_DESC, SUBCAUSE_CODE_HELP, NO_OF_ERRORS)
+
+    )
+#end
+
+#macro(CCAGS_NONAGG_QUERY $errTable $cptTable $ccTable $sccTable)
+(select errAdvice.CAUSE_PROT_TYPE, errAdvice.CAUSE_PROT_TYPE_DESC, errAdvice.CAUSE_CODE, errAdvice.CAUSE_CODE_DESC, errAdvice.CAUSE_CODE_HELP,errAdvice.SUBCAUSE_CODE, errAdvice.SUBCAUSE_CODE_DESC,
+errAdvice.NO_OF_ERRORS, NO_OF_TOTAL_ERR_SUBSCRIBERS, errAdvice.SUBCAUSE_CODE_HELP as ADVICE from 
+(select errRef.CAUSE_PROT_TYPE, cptref.CAUSE_PROT_TYPE_DESC, errRef.CAUSE_CODE, CAUSE_CODE_DESC,CAUSE_CODE_HELP, errRef.SUBCAUSE_CODE, SUBCAUSE_CODE_DESC, SUBCAUSE_CODE_HELP, 
+sum(NO_OF_ERRORS),
+sum(NO_OF_TOTAL_ERR_SUBSCRIBERS)
+    from
+        #temp_$errTable errRef,
+        $ccTable ccref,
+        $sccTable sccref,
+        $cptTable cptref
+    where
+           errRef.CAUSE_PROT_TYPE *= cptref.CAUSE_PROT_TYPE 
+        and errRef.CAUSE_CODE *= ccref.CAUSE_CODE 
+        and errRef.SUBCAUSE_CODE *= sccref.SUBCAUSE_CODE 
+        and errRef.CAUSE_PROT_TYPE *= ccref.CAUSE_PROT_TYPE
+    group by
+        errRef.CAUSE_CODE,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP,
+        errRef.SUBCAUSE_CODE,
+        SUBCAUSE_CODE_DESC,
+        SUBCAUSE_CODE_HELP,
+        errRef.CAUSE_PROT_TYPE,
+        CAUSE_PROT_TYPE_DESC
+    )
+    as errAdvice(CAUSE_PROT_TYPE, CAUSE_PROT_TYPE_DESC, CAUSE_CODE, CAUSE_CODE_DESC,CAUSE_CODE_HELP, SUBCAUSE_CODE, SUBCAUSE_CODE_DESC, SUBCAUSE_CODE_HELP, NO_OF_ERRORS, NO_OF_TOTAL_ERR_SUBSCRIBERS)
+    )
+#end
+
+#macro(CREATE_CC_ANALYSIS_TEMP_TABLE $tablesToUseInQuery $table_name_type)
+        SELECT
+        *
+        INTO #temp_$table_name_type
+        FROM
+        (
+            SELECT
+            CAUSE_PROT_TYPE ,
+            CAUSE_CODE ,
+            SUBCAUSE_CODE ,
+            count(distinct(IMSI)) as NO_OF_TOTAL_ERR_SUBSCRIBERS,
+            sum(NO_OF_ERRORS) as NO_OF_ERRORS
+        FROM
+            (
+            #foreach ($rawtable in $tablesToUseInQuery)
+                SELECT
+                        CAUSE_PROT_TYPE ,
+                        CAUSE_CODE ,
+                        SUBCAUSE_CODE ,
+                        IMSI ,
+                        COUNT(*) AS NO_OF_ERRORS
+                FROM
+                dc.$rawtable errRef,
+                $groupTable temp_group
+                WHERE
+                       #if ($timerange == "TR_4")
+                        #GET_DATE_RANGE_LOCAL()
+                    #else
+                        #GET_DATETIME_RANGE()
+                    #end
+                    and #GET_JOIN("errRef" "temp_group" $joinKeys)
+                    and temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+                    and #GET_TAC_EXCLUSION()
+                GROUP BY
+                    IMSI,
+                    SUBCAUSE_CODE,
+                    CAUSE_CODE ,
+                    CAUSE_PROT_TYPE
+                #if($velocityCount < $tablesToUseInQuery.size())
+                    union all
+                #end 
+            #end
+            ) AS temp (CAUSE_PROT_TYPE ,CAUSE_CODE ,SUBCAUSE_CODE ,IMSI ,NO_OF_ERRORS)
+            GROUP BY
+            CAUSE_PROT_TYPE ,
+            CAUSE_CODE ,
+            SUBCAUSE_CODE 
+            ) AS overall_temp;
+#end
+
+#macro(CREATE_CC_ANALYSIS_TEMP_TABLE_FOR_APN $tablesToUseInQuery $table_name_type)
+        SELECT
+        *
+        INTO #temp_$table_name_type
+        FROM
+        (
+            SELECT
+            CAUSE_PROT_TYPE ,
+            CAUSE_CODE ,
+            SUBCAUSE_CODE ,
+            count(distinct(IMSI)) as NO_OF_TOTAL_ERR_SUBSCRIBERS,
+            sum(NO_OF_ERRORS) as NO_OF_ERRORS
+        FROM
+            (
+            #foreach ($rawtable in $tablesToUseInQuery)
+                SELECT
+                        CAUSE_PROT_TYPE ,
+                        CAUSE_CODE ,
+                        SUBCAUSE_CODE ,
+                        IMSI ,
+                        COUNT(*) AS NO_OF_ERRORS
+                FROM
+                dc.$rawtable
+                WHERE
+                    #if ($timerange == "TR_4")
+                        #GET_DATE_RANGE_LOCAL()
+                    #else
+                        #GET_DATETIME_RANGE()
+                    #end
+                    AND $joinKeys.get(0) in (SELECT $joinKeys.get(0) from dc.$groupTable temp_group where temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM)
+                    and #GET_TAC_EXCLUSION()
+                GROUP BY
+                    IMSI,
+                    SUBCAUSE_CODE,
+                    CAUSE_CODE ,
+                    CAUSE_PROT_TYPE
+                #if($velocityCount < $tablesToUseInQuery.size())
+                    union all
+                #end 
+            #end
+            ) AS temp (CAUSE_PROT_TYPE ,CAUSE_CODE ,SUBCAUSE_CODE ,IMSI ,NO_OF_ERRORS)
+            GROUP BY
+            CAUSE_PROT_TYPE ,
+            CAUSE_CODE ,
+            SUBCAUSE_CODE 
+            ) AS overall_temp;
+#end
+
+begin
+#if($useAggregationTables)
+
+    #if($csv == true)
+         SET TEMPORARY OPTION Temp_Extract_Name1 = 'csvFileName' ;
+    #end
+	
+    select
+        :$ApplicationConstants.GROUP_NAME_PARAM as SYS_COL_$groupnameColumn,
+        #GET_NOT_NULL_COLUMN_WITH_SYSTEM_COLUMNS_HANDLED(["err", "sub"] ['CAUSE_PROT_TYPE'])
+        isnull(CAUSE_PROT_TYPE_DESC, '') as CAUSE_PROT_TYPE_DESC,
+        #GET_NOT_NULL_COLUMN(["err", "sub"] ['CAUSE_CODE'])
+        isnull(CAUSE_CODE_DESC, '') as CAUSE_CODE_DESC,
+        isnull(CAUSE_CODE_HELP, '') as CAUSE_CODE_HELP,
+        #GET_NOT_NULL_COLUMN(["err", "sub"] ['SUBCAUSE_CODE'])
+        isnull(SUBCAUSE_CODE_DESC, '') as SUBCAUSE_CODE_DESC,
+        isnull(err.ADVICE, '') as whatnext,
+         max(err.NO_OF_ERRORS) as NO_OF_ERRORS,
+        max(sub.NO_OF_TOTAL_ERR_SUBSCRIBERS) as NO_OF_TOTAL_ERR_SUBSCRIBERS
+    from
+        (
+        #foreach ($errtable in $errTables)
+    
+            #if (($errtable.toString().indexOf($ApplicationConstants.SGEH) > -1) && $useNonLteTables)
+                #CCAGS_SINGLE_AGG_QUERY($errtable $cptRefForSgeh $ccRefForSgeh $sccRefForSgeh false)
+            #elseif ($useLteTables)
+                #CCAGS_SINGLE_AGG_QUERY($errtable $cptRefForLte $ccRefForLte $sccRefForLte true)
+            #end
+    
+            #if($velocityCount < $errTables.size())
+                union all
+            #end
+    
+        #end
+        ) as err (TECHNOLOGY,CAUSE_PROT_TYPE, CAUSE_PROT_TYPE_DESC, CAUSE_CODE, CAUSE_CODE_DESC,CAUSE_CODE_HELP, SUBCAUSE_CODE, SUBCAUSE_CODE_DESC, NO_OF_ERRORS, ADVICE)
+    
+    left outer join
+        (select
+            TECHNOLOGY,CAUSE_PROT_TYPE, CAUSE_CODE, SUBCAUSE_CODE, count(distinct(IMSI)) 
+            from (
+                #if($rawNonLteTables.size() > 0 && $useNonLteTables)
+                (
+                    #if (($groupTable.toString().indexOf("GROUP_TYPE_E_APN") > -1))
+                        #CCAGS_SINGLE_AGG_SUB_QUERY_FOR_APN($joinCols $rawNonLteTables)
+                    #else
+                        #CCAGS_SINGLE_AGG_SUB_QUERY($joinCols $rawNonLteTables)
+                    #end
+                )
+                #end
+            #if($rawLteTables.size() > 0 && $useLteTables)
+        
+                #if($rawNonLteTables.size() > 0 && $useNonLteTables)
+                    union all
+                #end
+                (
+                #if (($groupTable.toString().indexOf("GROUP_TYPE_E_APN") > -1))
+                    #CCAGS_SINGLE_AGG_SUB_QUERY_FOR_APN ($joinCols $rawLteTables)
+                #else
+                    #CCAGS_SINGLE_AGG_SUB_QUERY ($joinCols $rawLteTables)
+                #end                
+                )
+            #end
+               ) as temp_sub
+        group by
+            TECHNOLOGY,
+            CAUSE_PROT_TYPE,
+            CAUSE_CODE,
+            SUBCAUSE_CODE
+        )as sub(TECHNOLOGY,CAUSE_PROT_TYPE, CAUSE_CODE, SUBCAUSE_CODE, NO_OF_TOTAL_ERR_SUBSCRIBERS)
+    on(
+        err.CAUSE_PROT_TYPE = sub.CAUSE_PROT_TYPE
+        and err.CAUSE_CODE = sub.CAUSE_CODE
+        and err.SUBCAUSE_CODE = sub.SUBCAUSE_CODE
+        and err.TECHNOLOGY = sub.TECHNOLOGY
+    )
+    group by
+        CAUSE_CODE,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP,
+        SUBCAUSE_CODE,
+        SUBCAUSE_CODE_DESC,
+        whatnext,
+        SYS_COL_CAUSE_PROT_TYPE,
+        CAUSE_PROT_TYPE_DESC
+    order by
+        CAUSE_CODE,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP,
+        SUBCAUSE_CODE,
+        SUBCAUSE_CODE_DESC,
+        whatnext,
+        SYS_COL_CAUSE_PROT_TYPE,
+        CAUSE_PROT_TYPE_DESC;
+
+#else
+
+    #if($rawNonLteTables.size() > 0 && $useNonLteTables)
+        #if (($groupTable.toString().indexOf("GROUP_TYPE_E_APN") > -1))
+            #CREATE_CC_ANALYSIS_TEMP_TABLE_FOR_APN($rawNonLteTables "SGEH_ERR_RAW")
+        #else
+            #CREATE_CC_ANALYSIS_TEMP_TABLE($rawNonLteTables "SGEH_ERR_RAW")
+        #end
+    #end
+
+    #if($rawLteTables.size() > 0 && $useLteTables)
+        #if (($groupTable.toString().indexOf("GROUP_TYPE_E_APN") > -1))
+            #CREATE_CC_ANALYSIS_TEMP_TABLE_FOR_APN($rawLteTables "LTE_ERR_RAW")
+        #else
+            #CREATE_CC_ANALYSIS_TEMP_TABLE($rawLteTables "LTE_ERR_RAW")
+        #end                
+    #end
+
+    #if($csv == true)
+         SET TEMPORARY OPTION Temp_Extract_Name1 = 'csvFileName' ;
+    #end
+	
+    select
+           :$ApplicationConstants.GROUP_NAME_PARAM as SYS_COL_$groupnameColumn,
+        CAUSE_PROT_TYPE as SYS_COL_CAUSE_PROT_TYPE,
+        isnull(CAUSE_PROT_TYPE_DESC, '') as CAUSE_PROT_TYPE_DESC,
+        err.CAUSE_CODE,
+        isnull(CAUSE_CODE_DESC, '') as CAUSE_CODE_DESC,
+        isnull(CAUSE_CODE_HELP, '') as CAUSE_CODE_HELP,
+        err.SUBCAUSE_CODE,
+        isnull(SUBCAUSE_CODE_DESC, '') as SUBCAUSE_CODE_DESC,
+        isnull(err.advice, '') as whatnext,
+        sum(isnull(err.NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+        sum(isnull(err.NO_OF_TOTAL_ERR_SUBSCRIBERS, 0)) as NO_OF_TOTAL_ERR_SUBSCRIBERS
+    from
+        (    
+        #if($rawNonLteTables.size() > 0 && $useNonLteTables)
+            (
+            #CCAGS_NONAGG_QUERY("SGEH_ERR_RAW" $cptRefForSgeh $ccRefForSgeh $sccRefForSgeh)
+            )
+        #end
+        
+        #if($rawLteTables.size() > 0 && $useLteTables)
+            #if($rawNonLteTables.size() > 0 && $useNonLteTables)
+                union all
+            #end
+            (
+            #CCAGS_NONAGG_QUERY("LTE_ERR_RAW" $cptRefForLte $ccRefForLte $sccRefForLte)
+            )
+        #end
+           ) as err (CAUSE_PROT_TYPE, CAUSE_PROT_TYPE_DESC, CAUSE_CODE, CAUSE_CODE_DESC,CAUSE_CODE_HELP, SUBCAUSE_CODE, SUBCAUSE_CODE_DESC, NO_OF_ERRORS, NO_OF_TOTAL_ERR_SUBSCRIBERS, ADVICE)
+    group by
+        err.CAUSE_CODE,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP,
+        err.SUBCAUSE_CODE,
+        SUBCAUSE_CODE_DESC,
+        whatnext,
+        SYS_COL_CAUSE_PROT_TYPE,
+        CAUSE_PROT_TYPE_DESC
+    order by
+        err.CAUSE_CODE,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP,
+        err.SUBCAUSE_CODE,
+        SUBCAUSE_CODE_DESC,
+        whatnext,
+        SYS_COL_CAUSE_PROT_TYPE,
+        CAUSE_PROT_TYPE_DESC;
+#end
+end

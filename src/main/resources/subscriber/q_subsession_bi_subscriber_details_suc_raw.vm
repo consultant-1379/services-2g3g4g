@@ -1,0 +1,279 @@
+##
+## Subsession Business Intelligence - Subscriber Details
+##
+## Description: 
+##
+##     Subscriber Details for an IMSI.
+##
+## Parameter:   IMSI
+##
+## Date   : Aug 2010
+
+#DEFINE_CONSTANTS()
+
+#set($rawTablesLTE = $techPackTablesLTE.getRawTables())
+#set($rawTablesSGEH = $techPackTablesSGEH.getRawTables())
+#set($msisdnTable = "dc.DIM_E_IMSI_MSISDN")
+
+#if($type==$TYPE_IMSI)
+    #set($columns=[$IMSI])
+    #set($useLteTables = true)
+#elseif($type==$TYPE_PTMSI)
+    #set($columns=[$PTMSI])
+    #set($useLteTables = false)
+#end
+
+#set($rawViewName = "rawview")
+#set($columnsToSelect = ["IMSI", "PTMSI", "ROAMING", "HIERARCHY_1", "HIERARCHY_3", "VENDOR", "RAT", "MCC", "MNC", "LAC", "RAC", "EVENT_SOURCE_NAME", "IMSI_MCC", "IMSI_MNC", "TRAC"])
+#set($columnsToSelectLTE = ["DATETIME_ID", "IMSI", "null as PTMSI", "ROAMING", "HIERARCHY_1", "HIERARCHY_3", "VENDOR", "RAT", "MCC", "MNC", "null as LAC", "null as RAC", "EVENT_SOURCE_NAME", "IMSI_MCC", "IMSI_MNC", "TRAC"])
+#set($columnsToSelectSGEH = ["DATETIME_ID", "IMSI", "PTMSI", "ROAMING", "HIERARCHY_1", "HIERARCHY_3", "VENDOR", "RAT", "MCC", "MNC", "LAC", "RAC", "EVENT_SOURCE_NAME", "IMSI_MCC", "IMSI_MNC", "null as TRAC"])
+
+#macro(SUBBI_DATA_QUERY)
+(
+ #if($rawTablesSGEH.size() > 0)
+    #foreach ($rawtable in $rawTablesSGEH)
+        select
+            #GET_COLUMNS_NO_COMMA_TRAILING($columnsToSelectSGEH)
+        from dc.$rawtable where
+        #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+        AND DATETIME_ID = (SELECT MAX_DATETIME_ID FROM #temp_MAX_DATE_RAW)
+        AND EVENT_TIME = (SELECT MAX_EVENT_TIME FROM #temp_MAX_DATE_RAW )
+        #if($velocityCount < $rawTablesSGEH.size())
+                union all
+        #end
+    #end
+ #end
+ #if($rawTablesLTE.size() > 0 && $useLteTables)
+    #if($rawTablesSGEH.size() > 0)
+    union all
+    #end
+    #foreach ($rawtable in $rawTablesLTE)
+        select
+            #GET_COLUMNS_NO_COMMA_TRAILING($columnsToSelectLTE)
+        from dc.$rawtable where
+        #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns)
+        AND DATETIME_ID = (SELECT MAX_DATETIME_ID FROM #temp_MAX_DATE_RAW )
+        AND EVENT_TIME = (SELECT MAX_EVENT_TIME FROM #temp_MAX_DATE_RAW )
+        #if($velocityCount < $rawTablesLTE.size())
+                union all
+        #end
+    #end
+ #end
+ )as  temp_raw
+#end
+
+BEGIN
+  
+SELECT * INTO #temp_MAX_DATE_RAW FROM (
+    select 
+        MAX(MAX_EVENT_TIME) AS MAX_EVENT_TIME,
+        MAX(DATETIME_ID)    AS MAX_DATETIME_ID
+    FROM
+        (
+            #if($rawTablesSGEH.size() > 0)
+            #foreach ($rawtable in $rawTablesSGEH)
+                select
+                    MAX(EVENT_TIME) AS MAX_EVENT_TIME,
+                    DATETIME_ID
+                from 
+                    dc.$rawtable 
+                where
+                    #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                AND DATETIME_ID = ( SELECT
+                                        MAX(DATETIME_ID)
+                                    from 
+                                       dc.$rawtable 
+                                    where
+                                       #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                                       #if ($timerange=="TR_4")
+                                           AND #GET_ADJUSTED_DATETIME_RANGE()
+                                       #else
+                                           AND #GET_DATETIME_RANGE()
+                                       #end
+                                    )
+                group by 
+                    DATETIME_ID
+                #if($velocityCount < $rawTablesSGEH.size())
+                        union all
+                #end
+            #end
+         #end
+         #if($rawTablesLTE.size() > 0 && $useLteTables)
+            #if($rawTablesSGEH.size() > 0)
+            union all
+            #end
+            #foreach ($rawtable in $rawTablesLTE)
+                select
+                    MAX(EVENT_TIME) AS MAX_EVENT_TIME,
+                    DATETIME_ID
+                from 
+                    dc.$rawtable 
+                where
+                    #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                AND DATETIME_ID = ( SELECT
+                                        MAX(DATETIME_ID)
+                                    from 
+                                       dc.$rawtable 
+                                    where
+                                       #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                                       #if ($timerange=="TR_4")
+                                           AND #GET_ADJUSTED_DATETIME_RANGE()
+                                       #else
+                                           AND #GET_DATETIME_RANGE()
+                                       #end
+                                    )
+                group by 
+                    DATETIME_ID
+                #if($velocityCount < $rawTablesLTE.size())
+                        union all
+                #end
+            #end
+         #end
+     )AS temp
+) AS temp;
+  
+SELECT * INTO #temp_MIN_DATE_RAW FROM (
+    select 
+        MIN(MIN_EVENT_TIME) AS MIN_EVENT_TIME,
+        MIN(DATETIME_ID)    AS MIN_DATETIME_ID
+    FROM
+        (
+        
+            #if($rawTablesSGEH.size() > 0)
+            #foreach ($rawtable in $rawTablesSGEH)
+                select
+                    MIN(EVENT_TIME) AS MIN_EVENT_TIME,
+                    DATETIME_ID
+                from 
+                    dc.$rawtable 
+                where
+                    #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                AND DATETIME_ID = ( SELECT
+                                        MIN(DATETIME_ID)
+                                    from 
+                                       dc.$rawtable 
+                                    where
+                                       #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                                       #if ($timerange=="TR_4")
+                                           AND #GET_ADJUSTED_DATETIME_RANGE()
+                                       #else
+                                           AND #GET_DATETIME_RANGE()
+                                       #end
+                                    )
+                group by 
+                    DATETIME_ID
+                #if($velocityCount < $rawTablesSGEH.size())
+                        union all
+                #end
+            #end
+         #end
+         #if($rawTablesLTE.size() > 0 && $useLteTables)
+            #if($rawTablesSGEH.size() > 0)
+            union all
+            #end
+            #foreach ($rawtable in $rawTablesLTE)
+                select
+                        MIN(EVENT_TIME) AS MIN_EVENT_TIME,
+                        DATETIME_ID
+                    from 
+                        dc.$rawtable 
+                    where
+                        #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                    AND DATETIME_ID = ( SELECT
+                                            MIN(DATETIME_ID)
+                                        from 
+                                           dc.$rawtable 
+                                        where
+                                           #GET_COLUMNS_WHERE_BY_TABLE($rawtable $columns) 
+                                           #if ($timerange=="TR_4")
+                                                AND #GET_ADJUSTED_DATETIME_RANGE()
+                                           #else
+                                                AND #GET_DATETIME_RANGE()
+                                           #end
+                                        )
+                    group by 
+                        DATETIME_ID
+                    #if($velocityCount < $rawTablesLTE.size())
+                            union all
+                    #end
+            #end
+         #end
+     )AS temp
+) AS temp;
+
+
+#if($type==$TYPE_IMSI)
+    select 
+        max(MSISDN) as MSISDN
+    into
+        #tmp_msisdn
+    from 
+        dc.DIM_E_IMSI_MSISDN
+    where 
+        #GET_COLUMNS_WHERE_BY_TABLE($msisdnTable $columns)
+        AND TIMESTAMP_ID = (select 
+                                max(TIMESTAMP_ID) 
+                            from 
+                                dc.DIM_E_IMSI_MSISDN 
+                            where 
+                                MODIFIED = (SELECT
+                                                    max(MODIFIED)
+                                                from 
+                                                   dc.DIM_E_IMSI_MSISDN
+                                                where
+                                                   #GET_COLUMNS_WHERE_BY_TABLE($msisdnTable $columns) 
+                                           )
+                             );
+#end
+
+
+select 
+    TOP 1
+    #if($type==$TYPE_IMSI)
+        (case when (GROUP_NAME = 'VIP') then 1 else 0 end) as VIP_Status,
+        #tmp_msisdn.MSISDN AS MSISDN,
+    #end
+    isnull(mccmncref.COUNTRY, isnull(IMSI_MCC, ''))  AS Home_Country,
+    isnull(mccmncref.OPERATOR, isnull(IMSI_MNC, '')) AS Mobile_Network_Operator,
+    (case when (rawview.ROAMING = 1 ) then '$ApplicationConstants.ROAMING_STATUS_AWAY' else '$ApplicationConstants.ROAMING_STATUS_HOME' end) as Roaming_Status, 
+    rawview.HIERARCHY_1 || '-'  || rawview.HIERARCHY_3 || '-'  || rawview.VENDOR + '-'  || convert (char(1), rawview.RAT) as Last_Cell_Location, 
+    CASE 
+        WHEN rawview.LAC IS NULL AND rawview.RAC IS NULL    ## when we're looking at a 4G table
+        THEN (rawview.MCC || '-' || rawview.MNC + '-' || rawview.TRAC)  
+        ELSE (rawview.MCC || '-' || rawview.MNC + '-' || rawview.LAC || '-' || rawview.RAC)
+    END as Last_Routing_Area,
+    rawview.EVENT_SOURCE_NAME as Last_Observed_SGSN, 
+    #temp_MIN_DATE_RAW.MIN_EVENT_TIME AS First_Observed,
+    #temp_MAX_DATE_RAW.MAX_EVENT_TIME AS Last_Observed,
+    rawview.PTMSI as Last_Observed_PTMSI 
+from 
+    (SELECT
+       #GET_COLUMNS_NO_COMMA_TRAILING($columnsToSelect)
+    FROM
+       #SUBBI_DATA_QUERY()
+    GROUP BY
+       #GET_COLUMNS_NO_COMMA_TRAILING($columnsToSelect))
+    AS rawview,
+    #if($type==$TYPE_IMSI)
+       dc.GROUP_TYPE_E_IMSI imsigroup,
+       #tmp_msisdn,
+    #end
+       dc.DIM_E_SGEH_MCCMNC mccmncref, 
+       dc.DIM_E_SGEH_RAT ratref,
+       #temp_MAX_DATE_RAW,
+       #temp_MIN_DATE_RAW 
+where
+    #if($type==$TYPE_IMSI)
+        rawview.IMSI *= imsigroup.IMSI
+       and
+    #end
+    rawview.RAT = ratref.RAT           
+    AND isnull(IMSI_MCC, '') *= mccmncref.MCC
+    AND isnull(IMSI_MNC, '') *= mccmncref.MNC;
+    
+DROP TABLE #temp_MAX_DATE_RAW;
+DROP TABLE #temp_MIN_DATE_RAW;
+#if($type==$TYPE_IMSI)
+    DROP TABLE #tmp_msisdn;
+#end
+END

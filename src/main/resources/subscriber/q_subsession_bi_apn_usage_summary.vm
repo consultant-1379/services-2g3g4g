@@ -1,0 +1,115 @@
+##
+## Subsession Business Intelligence - APN usage summary analysis
+##
+## Description:
+##
+##     Summary data for each APN the user was using within the time period.
+##
+## Parameter:   IMSI, groupname, DATE_TIME range
+##
+
+#DEFINE_CONSTANTS()
+
+#set($RAW_ERR_TABLES = $techPackTables.getErrTables())
+#set($RAW_SUC_TABLES = $TECH_PACK_LIST.getAllRawTablesWithMeasurementType())
+#set($columnsToSelect=["APN","EVENT_ID"])
+#set($columnsToSelectSuc=["APN","EVENT_ID","NO_OF_SUCCESSES"])
+## per evaskol 20/4/11:
+## 2/3G: EVENT_ID should be either ACTIVATE (1) or DEACTIVATE (4)
+## 
+## in LTE, EVENT_ID should be either L_ATTACH (5), L_DEDICATED_BEARER_ACTIVATE (9), L_DEDICATED_BEARER_DEACTIVATE (10), L_PDN_CONNECT (11), L_PDN_DISCONNECT (12) or L_BEARER_MODIFY (16)
+#set($eventIdsToBeIncluded="(1,4,5,9,10,11,12,16)")
+
+#if($groupDefinitions)
+#set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+#set($groupTable = $groupDef.getTableName())
+#set($groupnameColumn = $groupDef.getGroupNameColumn())
+#set($joinKeys = $groupDef.getGroupKeys())
+#set($isgroup=true)
+#else
+#set($isgroup=false)
+#end
+
+#if($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+
+
+##new function to replace raw views with raw tables and specify columns to be contained in the result set
+##this function filters only on the datetime range
+#macro (APN_USAGE_REPLACE_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+    from dc.$rawtable
+    #if($isgroup)
+        ,$groupTable groupref
+    #elseif($ismsisdn)
+         ,dc.DIM_E_IMSI_MSISDN msisdnMap
+    #end
+
+    where
+        #if($timerange=="TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+        #else
+            #GET_DATETIME_RANGE()
+        #end
+        and
+        #if($isgroup)
+            #GET_JOIN($rawtable "groupref" $joinKeys)
+            and $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+        #elseif($ismsisdn)
+            #GET_JOIN($rawtable "msisdnMap" $joinKeys)
+            and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+        #else
+        IMSI = :IMSI
+        #end
+        and EVENT_ID in $eventIdsToBeIncluded
+
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+
+select
+    #if($count > 0)
+      top $count
+    #end
+    sum(no_of_errors) as NO_OF_ERRORS_PER_APN,
+    sum(no_of_successes) as NO_OF_SUCCESSES_PER_APN,
+    APN
+from
+(
+    select
+        APN,
+        count(*) as no_of_errors,
+        0 as no_of_successes
+    from
+         #APN_USAGE_REPLACE_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS($RAW_ERR_TABLES "err" $columnsToSelect)
+    group by
+        err.APN
+    union all
+    select
+        APN,
+        0 as no_of_errors,
+        SUM(NO_OF_SUCCESSES) as no_of_successes
+    from
+        #APN_USAGE_REPLACE_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS($RAW_SUC_TABLES "suc" $columnsToSelectSuc)
+    group by
+        suc.APN
+)  DT_EVENT_E_RAW
+group by
+DT_EVENT_E_RAW.APN
+order by
+NO_OF_ERRORS_PER_APN desc

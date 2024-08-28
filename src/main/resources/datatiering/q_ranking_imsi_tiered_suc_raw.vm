@@ -1,0 +1,113 @@
+##=============================================================================
+##
+## IMSI Ranking towards raw tables
+##
+## Description:
+##
+##    Provide the top n IMSIs based on failures, whether the subscriber is VIP or not need to be diplayed too
+##
+## Velocity Parameter:
+##
+##
+## count: top N IMSI
+## techPackTables: see TechPackTables's javadoc
+##
+## Named PreparedStatement Parameter:
+##
+##    :dateFrom   starting time
+##    :dateTo     ending time
+##
+
+
+##new function to replace raw views with raw tables and specify columns to be contained in the result set
+##this function filters only on the datetime range
+#macro (CREATE_IMSI_TEMP_TABLE_USING_ERR_RAW $rawtables $rawview $errtemptable)
+select
+#if($count > 0)
+	top $count
+#end 
+* into $errtemptable from (
+select IMSI, SUM(noOfErrors) as NO_OF_ERRORS from
+    (
+    #foreach ($rawtable in $rawtables)
+    select IMSI,count(*) as noOfErrors
+    from dc.$rawtable
+    where
+        #GET_DATETIME_RANGE()
+        and #GET_IMSI0_EXCLUSION($rawtable)
+        and  #GET_TAC_EXCLUSION_BY_TABLE($rawtable)
+    group by
+            IMSI
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+    )  as temp_$rawview(IMSI,noOfErrors)
+    group by IMSI
+)as temp
+ORDER BY NO_OF_ERRORS DESC;
+#end
+
+#macro (CREATE_IMSI_TEMP_TABLE_USING_SUC_RAW $rawtables $rawview $errtemptable $suctemptable)
+select * into $suctemptable from (
+select IMSI, SUM(noOfSuccesses) AS NO_OF_SUCCESSES from
+    (
+    #foreach ($rawtable in $rawtables)
+    SELECT
+		IMSI,
+		count(*) AS noOfSuccesses
+	FROM dc.$rawtable
+    where
+        #GET_DATETIME_RANGE()
+        and #GET_IMSI0_EXCLUSION($rawtable)
+        and  #GET_TAC_EXCLUSION_BY_TABLE($rawtable)
+        and IMSI in (SELECT IMSI from $errtemptable)
+    group by
+            IMSI
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+    )  as temp_$rawview(IMSI,noOfSuccesses)
+    group by IMSI
+)as temp;
+#end
+
+begin
+#CREATE_IMSI_TEMP_TABLE_USING_ERR_RAW($TECH_PACK_LIST.getAllRawErrTables() "err" "#temp_err_RAW")
+#CREATE_IMSI_TEMP_TABLE_USING_SUC_RAW($TECH_PACK_LIST.getAllRawSucTables() "suc" "#temp_err_RAW" "#temp_suc_RAW")
+
+#if($csv)
+   SET TEMPORARY OPTION Temp_Extract_Name1 = 'csvFileName' ;
+#end
+
+select
+    #if($count > 0)
+	  top $count
+	#end
+    rank() over (order by NO_OF_ERRORS desc) as RANK,
+    err.IMSI,
+    NO_OF_ERRORS,
+    isnull(NO_OF_SUCCESSES,0) as NO_OF_SUCCESSES
+from
+    (
+		SELECT
+        	IMSI,
+            SUM(NO_OF_ERRORS) as NO_OF_ERRORS
+        from #temp_err_RAW
+        GROUP BY
+        IMSI
+    ) AS err (IMSI ,NO_OF_ERRORS)
+    left outer join
+    (
+    	SELECT
+            IMSI,
+            SUM(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+         from #temp_suc_RAW
+        GROUP BY
+            IMSI
+    ) AS suc( IMSI, NO_OF_SUCCESSES )
+ on(err.IMSI = suc.IMSI)
+order by
+  RANK
+end

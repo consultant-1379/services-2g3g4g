@@ -1,0 +1,284 @@
+##=============================================================================
+##
+## Ranking
+##
+## Description:
+## Ranking query that queries the aggregation tables for ranking results
+##
+## Velocity parameter:
+##
+## type : one of { BSC,RNC,ENODEB, CELL, ECELL, TAC, CC}
+##
+## count : number of rows returned
+## techPackTables: see javadoc on TechPackTables
+##
+##
+## ## Named PreparedStatement Parameter:
+##
+##    :dateFrom - starting time
+##    :dateTo - ending time
+##
+##=============================================================================
+
+#macro(GET_COLUMNS_AND_TYPE $columnsToUse)
+    #foreach($column in $columnsToUse)
+        #set($columnType=$ApplicationMethods.getTypeOfColumn($column))
+        $column $columnType NULL,
+    #end
+#end
+
+#macro(SELECT_RANKING_DATA_FROM_ONE_TECH_PACK $columns $techPack)
+select
+    #if (${type}==$TYPE_TAC)
+    tac.MANUFACTURER as MANUFACTURER,
+    tac.Marketing_Name as Marketing_Name,
+    #elseif(${type}==$ApplicationConstants.TYPE_CAUSE_CODE)
+    cptref.CAUSE_PROT_TYPE_DESC,
+    ccref.CAUSE_CODE_DESC,
+    ccref.CAUSE_CODE_HELP,
+    #elseif($israt)
+    ratref.RAT_DESC,
+    #end
+    #GET_NOT_NULL_COLUMN(["err", "suc"] $columns)
+    sum(isnull(err.NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(suc.NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES
+from
+    (
+    #SELECT_RANKING_DATA_FOR_ERROR($columns $techPack)
+    ) as err(
+        #GET_COLUMNS($columns)
+        NO_OF_ERRORS
+    )
+left outer join
+    (
+    #SELECT_RANKING_DATA_FOR_SUCCESS($columns $techPack)
+    ) as suc(
+        #GET_COLUMNS($columns)
+        NO_OF_SUCCESSES
+    )
+on(
+    #GET_JOIN("err" "suc" $columns)
+)
+#if (${type}==$TYPE_TAC)
+left outer join
+    dc.DIM_E_SGEH_TAC tac
+on(
+    isnull(err.TAC,suc.TAC) = tac.TAC
+)
+#elseif($israt)
+left outer join
+    dc.DIM_E_SGEH_RAT ratref
+on(
+    isnull(err.RAT,suc.RAT) = ratref.RAT
+)
+#end
+#if(${type}==$ApplicationConstants.TYPE_CAUSE_CODE)
+left outer join
+    dc.${techPack.getStaticLookupTechpack()}_CAUSECODE ccref
+on(
+    isnull(err.CAUSE_CODE, suc.CAUSE_CODE ) = ccref.CAUSE_CODE
+    AND
+    isnull(err.CAUSE_PROT_TYPE, suc.CAUSE_PROT_TYPE ) = ccref.CAUSE_PROT_TYPE
+)
+left outer join
+    dc.${techPack.getStaticLookupTechpack()}_CAUSE_PROT_TYPE cptref
+on(
+    isnull(err.CAUSE_PROT_TYPE , suc.CAUSE_PROT_TYPE ) = cptref.CAUSE_PROT_TYPE
+)
+#end
+group by
+    #if (${type}==$TYPE_TAC)
+    tac.MANUFACTURER,
+    tac.Marketing_Name,
+    #elseif(${type}==$ApplicationConstants.TYPE_CAUSE_CODE)
+    cptref.CAUSE_PROT_TYPE_DESC,
+    ccref.CAUSE_CODE_DESC,
+    ccref.CAUSE_CODE_HELP,
+    #elseif($israt)
+    ratref.RAT_DESC,
+    #end
+    #GET_COLUMNS_WITH_TABLE_NAMES(["err", "suc"] $columns)
+#end
+
+#macro(SELECT_RANKING_DATA_TECH_PACKS $columns $techPacks)
+select
+    #if (${type}==$TYPE_TAC)
+    tac.MANUFACTURER as MANUFACTURER,
+    tac.Marketing_Name as Marketing_Name,
+    #elseif($israt)
+    ratref.RAT_DESC,
+    #end
+    #GET_NOT_NULL_COLUMN(["err", "suc"] $columns)
+    sum(isnull(err.NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(suc.NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES
+from
+    (
+    select
+        #GET_COLUMNS($columns)
+        sum(NO_OF_ERRORS) as NO_OF_ERRORS
+    from
+    (
+    #foreach($techPack in $techPacks)
+        #SELECT_RANKING_DATA_FOR_ERROR($columns $techPack)
+        #if($velocityCount < $techPacks.size())
+            union all
+        #end
+    #end ) as temp_err
+    group by
+    #GET_COLUMNS_NO_COMMA_TRAILING($columns)
+    ) as err(
+        #GET_COLUMNS($columns)
+        NO_OF_ERRORS
+    )
+left outer join
+    (
+    select
+        #GET_COLUMNS($columns)
+        sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from
+    (
+    #foreach($techPack in $techPacks)
+        #SELECT_RANKING_DATA_FOR_SUCCESS($columns $techPack)
+        #if($velocityCount < $techPacks.size())
+            union all
+        #end
+    #end ) as temp_suc
+    group by
+    #GET_COLUMNS_NO_COMMA_TRAILING($columns)
+    ) as suc(
+        #GET_COLUMNS($columns)
+        NO_OF_SUCCESSES
+    )
+on(
+    #GET_JOIN("err" "suc" $columns)
+)
+#if (${type}==$TYPE_TAC)
+left outer join
+    dc.DIM_E_SGEH_TAC tac
+on(
+    isnull(err.TAC,suc.TAC) = tac.TAC
+)
+#elseif($israt)
+left outer join
+    dc.DIM_E_SGEH_RAT ratref
+on(
+    isnull(err.RAT,suc.RAT) = ratref.RAT
+)
+#end
+group by
+    #if (${type}==$TYPE_TAC)
+    tac.MANUFACTURER,
+    tac.Marketing_Name,
+    #elseif($israt)
+    ratref.RAT_DESC,
+    #end
+    #GET_COLUMNS_WITH_TABLE_NAMES(["err", "suc"] $columns)
+#end
+
+#macro(SELECT_RANKING_DATA_FOR_ERROR $columns $techPack)
+    select
+        #GET_COLUMNS($columns)
+        sum(NO_OF_ERRORS) as NO_OF_ERRORS
+    from
+        $techPack.getErrAggregationView()
+    where
+        #GET_DATETIME_RANGE()
+        #if($israt)
+            #if(${type}=="ECELL" || ${type}=="ENODEB")
+        and    RAT = 2
+            #elseif(${type}==$TYPE_RNC)
+        and    RAT = 1
+            #elseif(${type}==$TYPE_BSC)
+        and    RAT = 0
+            #end
+        #end
+    group by
+        #GET_COLUMNS_NO_COMMA_TRAILING($columns)
+#end
+
+#macro(SELECT_RANKING_DATA_FOR_SUCCESS $columns $techPack)
+    select
+        #GET_COLUMNS($columns)
+        sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from
+        $techPack.getSucAggregationView()
+    where
+        #GET_DATETIME_RANGE()
+        #if($israt)
+            #if(${type}=="ECELL" || ${type}=="ENODEB")
+                and RAT = 2
+            #elseif(${type}==$TYPE_RNC)
+                and RAT = 1
+            #elseif(${type}==$TYPE_BSC)
+                and    RAT = 0
+            #end
+        #end
+    group by
+        #GET_COLUMNS_NO_COMMA_TRAILING($columns)
+#end
+
+#DEFINE_CONSTANTS()
+
+#if(${type}==$TYPE_BSC||${type}==$TYPE_CELL||${type}==$TYPE_RNC||${type}=="ECELL"||${type}=="ENODEB")
+    #set($israt=true)
+#else
+    #set($israt=false)
+#end
+
+#if($type == "CC")
+    #set($ccRanking=true)
+#else
+    #set($ccRanking=false)
+#end
+
+select
+    #if($count > 0)
+      top $count
+    #end
+    rank() over (order by NO_OF_ERRORS desc) as RANK,
+    #if (${type}==$TYPE_TAC)
+    isnull(MANUFACTURER, 'Manufacturer Unknown') AS MANUFACTURER,
+    isnull(Marketing_Name, 'Model Unknown') AS Marketing_Name,
+    #elseif(${type}==$ApplicationConstants.TYPE_CAUSE_CODE)
+        CAUSE_PROT_TYPE_DESC,
+        CAUSE_CODE_DESC,
+        CAUSE_CODE_HELP as CAUSE_CODE_RECOMMENDED_ACTION,
+    #elseif($israt)
+        RAT_DESC,
+    #end
+    #if($ccRanking)
+    CAUSE_PROT_TYPE as SYS_COL_CAUSE_PROT_TYPE,
+    CAUSE_CODE,
+    #else
+    #GET_COLUMNS($columnsForQuery)
+    #end
+    sum(isnull(NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES
+from
+    (
+    #if(${type}==$ApplicationConstants.TYPE_CAUSE_CODE)
+        #foreach($techPack in $TECH_PACK_LIST.getTechPacks())
+            #SELECT_RANKING_DATA_FROM_ONE_TECH_PACK($columnsForQuery $techPack)
+            #if($velocityCount < $TECH_PACK_LIST.getTechPacks().size())
+                union all
+            #end
+        #end
+    #else
+        #SELECT_RANKING_DATA_TECH_PACKS($columnsForQuery $TECH_PACK_LIST.getTechPacks())
+    #end
+    ) as temp_view
+    #if (${type}==$TYPE_TAC)
+    where ISNULL(temp_view.TAC,-1) not in (select TAC from dc.GROUP_TYPE_E_TAC where GROUP_NAME = 'EXCLUSIVE_TAC')
+    #end
+group by
+    #GET_COLUMNS_NO_COMMA_TRAILING($columnsForQuery)
+    #if (${type}==$ApplicationConstants.TYPE_TAC)
+    ,MANUFACTURER
+    ,Marketing_Name
+    #elseif(${type}==$ApplicationConstants.TYPE_CAUSE_CODE)
+    ,CAUSE_CODE_DESC
+    ,CAUSE_PROT_TYPE_DESC
+    ,CAUSE_CODE_HELP
+    #elseif($israt)
+        ,RAT_DESC
+    #end

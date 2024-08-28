@@ -1,0 +1,147 @@
+##
+## Subsession Business Intelligence - TAU and Handover Event Analysis
+##
+## Parameter:   IMSI or IMSI_GROUP, DATE_TIME range, EVENT_TYPE
+##
+## Date   : Feb 2014
+
+#DEFINE_CONSTANTS()
+
+#if($groupDefinitions)
+    #set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+    #set($groupTable = $groupDef.getTableName())
+    #set($groupnameColumn = $groupDef.getGroupNameColumn())
+    #set($joinKeys = $groupDef.getGroupKeys())
+    #set($isgroup=true)
+#else
+    #set($isgroup=false)
+#end
+
+## set Event ID to that of Tau
+#set($event_id = 8)
+
+#if($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+#set($columns=["EVENT_SUBTYPE_ID","TAC"])
+#set($imsiColumn=["IMSI"])
+
+
+#set($RAW_ERR_TABLES = $techPackTablesLTE.getErrTables())
+#set($RAW_SUC_TABLES = $TECH_PACK_LIST.getSpecificRawTablesWithMeasurementType(["EVENT_E_LTE_IMSI_SUC_RAW"]))
+
+
+##new function used to replace raw view with raw tables
+#macro (REPLACE_ERR_RAW_VIEW_WITH_AGG_TABLES $rawtables $rawview)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+    EVENT_SUBTYPE_ID,
+    TAC,
+    count(*) as no_of_errors
+    from dc.$rawtable err
+        #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #if ($timerange == "TR_4")
+        #GET_DATE_RANGE_LOCAL()
+        #else
+        #GET_DATETIME_RANGE()
+        #end
+        and EVENT_ID = $event_id
+        #USE_JOIN_KEYS($rawview)
+    group by
+        EVENT_SUBTYPE_ID,
+        TAC
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+
+##new function used to replace raw view with raw tables
+#macro (REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES $rawtables $rawview)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+    EVENT_SUBTYPE_ID,
+    TAC,
+    sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from dc.$rawtable suc
+        #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #if ($timerange == "TR_4")
+        #GET_ADJUSTED_DATETIME_RANGE()
+        #else
+        #GET_DATETIME_RANGE()
+        #end
+        and EVENT_ID = $event_id
+        #USE_JOIN_KEYS($rawview)
+    group by
+        EVENT_SUBTYPE_ID,
+        TAC
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (USE_JOIN_KEYS $raw)
+    #if($isgroup)
+    and #GET_JOIN($raw "groupref" $joinKeys)
+    and $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+    #elseif($ismsisdn)
+    and #GET_JOIN($raw "msisdnMap" $joinKeys)
+    and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+    #end
+#end
+
+select
+    SUM(DT.err) as NO_OF_FAILURES,
+    SUM(DT.suc) as NO_OF_SUCCESSES,
+    DT.TAC || ','  ||  TU.EVENT_SUBTYPE_ID_DESC as TAC_AND_TAU
+from
+(
+    select
+        EVENT_SUBTYPE_ID,
+        TAC,
+        sum(no_of_errors) as err,
+        0  		as suc
+    from
+        #if($isgroup||$ismsisdn)
+            #REPLACE_ERR_RAW_VIEW_WITH_AGG_TABLES($RAW_ERR_TABLES "err")
+        #else
+            #REPLACE_ERR_RAW_VIEW_WITH_RAW_TABLES_AND_FILTER_COLUMNS_SPECIFY_COLUMNS_WITH_EVENT_ID($RAW_ERR_TABLES "err" $imsiColumn $columns $event_id)
+        #end
+    group by
+        EVENT_SUBTYPE_ID,
+        TAC
+    union all
+    select
+        EVENT_SUBTYPE_ID,
+        TAC,
+        0 			as err,
+        sum(NO_OF_SUCCESSES) as suc
+    from
+        #if($isgroup||$ismsisdn)
+            #REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES($RAW_SUC_TABLES "suc")
+        #else
+            #REPLACE_IMSI_SUC_RAW_VIEW_WITH_RAW_TABLES_AND_FILTER_COLUMNS_SPECIFY_COLUMNS_WITH_EVENT_ID($RAW_SUC_TABLES "suc" $imsiColumn $columns $event_id)
+        #end
+    group by
+        EVENT_SUBTYPE_ID,
+        TAC
+) AS DT,
+dc.DIM_E_LTE_EVENT_SUBTYPE TU
+    where
+    DT.EVENT_SUBTYPE_ID = TU.EVENT_SUBTYPE_ID
+    and TU.EVENT_ID = $event_id
+group by
+    TAC_AND_TAU
+
+
+

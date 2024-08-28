@@ -1,0 +1,157 @@
+##
+## Subsession Business Intelligence - Busy hour summary analysis
+##
+## Description:
+##
+##     Summary data for busy hour events.
+##
+## Parameter:   IMSI, groupname, DATE_TIME range
+##
+## Date   : Nov 2010
+
+#DEFINE_CONSTANTS()
+#set($RAW_ERR_TABLES = $techPackTables.getErrTables())
+#set($RAW_SUC_TABLES = $TECH_PACK_LIST.getAllRawTablesWithMeasurementType())
+#set($periodColumn="HOUR_ID")
+#set($periodDayColumn="DAY_ID")
+#set($columnsToSelect=[$periodColumn, $periodDayColumn])
+
+#if($groupDefinitions)
+#set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+#set($groupTable = $groupDef.getTableName())
+#set($groupnameColumn = $groupDef.getGroupNameColumn())
+#set($joinKeys = $groupDef.getGroupKeys())
+#set($isgroup=true)
+#else
+#set($isgroup=false)
+#end
+
+#if($type==$TYPE_IMSI)
+    #set($columns=[$IMSI])
+#elseif($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+#macro (REPLACE_IMSI_SUC_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #set($tablename="table$rawview")
+
+    #foreach ($rawtable in $rawtables)
+    select
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        ,sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from dc.$rawtable $tablename
+    #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #GET_DATETIME_RANGE()
+        #GET_EXTRA_WHERE_CLAUSE($tablename)
+        group by
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        #if($velocityCount < $rawtables.size())
+        union
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (REPLACE_ERR_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #set($tablename="table$rawview")
+
+    #foreach ($rawtable in $rawtables)
+    select
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        ,count(*) as no_of_failures
+    from dc.$rawtable $tablename
+    #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #GET_DATETIME_RANGE()
+        #GET_EXTRA_WHERE_CLAUSE($tablename)
+        group by
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        #if($velocityCount < $rawtables.size())
+        union
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (GET_EXTRA_TABLES_IN_FROM)
+    #if($isgroup)
+        ,$groupTable groupref
+    #elseif($ismsisdn)
+        ,dc.DIM_E_IMSI_MSISDN msisdnMap
+    #end
+#end
+
+#macro (GET_EXTRA_WHERE_CLAUSE $tablename)
+    and
+    #if($isgroup)
+        #GET_JOIN($tablename "groupref" $joinKeys)
+        and $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+    #elseif($ismsisdn)
+        #GET_JOIN($tablename "msisdnMap" $joinKeys)
+        and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+    #else
+        #GET_COLUMNS_WHERE($columns)
+    #end
+#end
+
+
+
+select
+    sum(no_of_errors) as NO_OF_FAILURES,
+    sum(no_of_successes) as NO_OF_SUCCESSES,
+    $periodColumn,
+    $periodDayColumn
+from
+(
+    select
+        $periodColumn,
+        $periodDayColumn,
+        sum(no_of_failures) as no_of_errors,
+        0 as no_of_successes
+    from
+        #REPLACE_ERR_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS($RAW_ERR_TABLES "err" $columnsToSelect)
+    group by
+        $periodColumn,
+        $periodDayColumn
+    union
+    select
+        $periodColumn,
+        $periodDayColumn,
+        0 as no_of_errors,
+        sum(NO_OF_SUCCESSES) as no_of_success
+    from
+        #REPLACE_IMSI_SUC_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS($RAW_SUC_TABLES "suc" $columnsToSelect)
+    group by
+        $periodColumn,
+        $periodDayColumn
+)DT_EVENT_E_SGEH_RAW
+group by
+    DT_EVENT_E_SGEH_RAW.$periodDayColumn,
+    DT_EVENT_E_SGEH_RAW.$periodColumn
+order by
+    DT_EVENT_E_SGEH_RAW.$periodDayColumn,
+    DT_EVENT_E_SGEH_RAW.$periodColumn

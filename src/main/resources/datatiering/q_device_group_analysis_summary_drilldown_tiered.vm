@@ -1,0 +1,96 @@
+##
+## Device Analysis - device group summary drilldown
+## See http://atrclin2.athtem.eei.ericsson.se/wiki/index.php/ENIQ_Events_Services_Design_Rules for the design rules
+## on exclusive TAC handling that apply to this query
+##
+## Description: 
+##
+##     Drilldown by device group for summary analysis
+##
+## Velocity Parameter: 
+##
+## AGGREGATION_TABLES : a TechPackTables object containing the Aggregation views applicable for time range
+## RAW_TABLES : a TechPackTables object containing the Raw tables applicable for this time range
+## useAggregationTables : a boolean indicating whether to use the aggregation tables or raw tables 
+## for error/success part of the query
+##
+## Named PreparedStatement Parameters:
+##
+##    :dateFrom - starting time
+##    :dateTo - ending time
+##    :groupColumn - group name
+##
+
+#macro (SUM_GROUPS_IN_AGGREGATION_VIEW $view $columnToAggregate)
+    select
+        temp.TAC as TAC,       
+        sum($columnToAggregate)       
+    from        
+        $view temp,        
+        dc.GROUP_TYPE_E_TAC tacgroup
+    where
+        #GET_DATETIME_RANGE()
+        and     
+        tacgroup.GROUP_NAME = :groupname
+        and temp.TAC = tacgroup.TAC        
+    group by
+        TAC
+#end    
+
+#DEFINE_CONSTANTS()
+#set($columnsToSelectFromRawTables=["TAC"])
+
+select         
+    isnull(suc.TAC, err.TAC) as TAC,
+    isnull(tacref.MANUFACTURER, convert(varchar(12),TAC)) as MANUFACTURER,
+    isnull(tacref.Marketing_Name, convert(varchar(12),TAC)) as Marketing_Name,
+    sum(isnull(NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+    NO_OF_ERRORS+NO_OF_SUCCESSES as OCCURRENCES,
+    #CALCULATE_KPI_RATIO() as SUCCESS_RATIO
+from
+    (
+    select
+        temp_err.TAC as TAC,        
+        count(*)        
+    from
+        #REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS($RAW_TABLES.getErrTables() "temp_err" $columnsToSelectFromRawTables),               
+        dc.GROUP_TYPE_E_TAC tacgroup
+    where
+        tacgroup.GROUP_NAME = :groupname
+        and temp_err.TAC = tacgroup.TAC        
+    group by
+        TAC
+    ) as err(TAC, NO_OF_ERRORS)
+    full outer join
+    (    
+        ##need to sum on the union of the sums from the aggregation tables (otherwise get duplicate results
+        ##on joining these results with the success counts from the subquery below)
+        select
+        TAC,       
+        sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+        from (
+        #foreach ($aggView in $AGGREGATION_TABLES.getSucTables())
+            #SUM_GROUPS_IN_AGGREGATION_VIEW($aggView "NO_OF_SUCCESSES")
+            #if ( $velocityCount < $AGGREGATION_TABLES.getSucTables().size())
+                union all
+            #end
+        #end    
+        ) as total_successes(TAC, NO_OF_SUCCESSES)
+        group by
+        TAC
+    ) as suc(TAC, NO_OF_SUCCESSES)
+    on(
+        suc.TAC = err.TAC
+    )
+    left outer join
+        dc.DIM_E_SGEH_TAC tacref
+    on(
+        tacref.TAC=isnull(suc.TAC, err.TAC)
+    )
+group by
+    TAC,
+    tacref.MANUFACTURER,
+    tacref.MARKETING_NAME
+order by
+    OCCURRENCES

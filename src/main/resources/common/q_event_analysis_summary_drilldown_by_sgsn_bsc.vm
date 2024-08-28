@@ -1,0 +1,179 @@
+##=============================================================================
+##
+## Event Analysis: Percentage ratio/KPI drilldown
+##
+## Description: 
+##
+## Velocity Parameters:
+##
+## type : SGSN
+##
+## drilltype : one of {SGSN, BSC, CELL}S
+##
+##
+## Named Prepared Statement Parameters:
+##
+##    :dateFrom starting time
+##    :dateTo ending time
+##    :$ApplicationConstants.EVENT_ID
+##    :$SGSN
+##    :$BSC
+##    :$RAT
+##    :$VENDOR
+##    :$CELL
+##
+##=============================================================================
+
+#DEFINE_CONSTANTS()
+
+#set($columns=[$CELL])
+#set($columnsToSelectErrorRAW=[$CELL, $IMSI])
+#set($columnsToSelectAsResult=":$SGSN as SYS_COL_SGSN, :$RAT as RAT, :$VENDOR, :$BSC as SYS_COL_BSC, HIERARCHY_1, RAT_DESC, :$ApplicationConstants.EVENT_ID_PARAM as SYS_COL_EVENT_ID_PARAM, EVENT_ID_DESC, NO_OF_ERRORS, NO_OF_SUCCESSES, OCCURRENCES, KPI, NO_OF_TOTAL_ERR_SUBSCRIBERS")
+#set($conditionToSelectErrorRAW="and $EVENT_ID = :$ApplicationConstants.EVENT_ID_PARAM and $SGSN = :$SGSN and $BSC = :$BSC and $RAT = :$RAT and $VENDOR = :$VENDOR")
+#set ($useExclusiveTAC="no")
+
+##new function used to replace raw view with raw tables
+#macro (REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES $rawtables $rawview $networkType)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+    HIERARCHY_1,
+    sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from dc.$rawtable suc,
+    (
+        select HIER321_ID, HIER3_ID,
+        HIERARCHY_1
+        from DIM_E_${networkType}_HIER321
+        where $BSC = :$BSC and $RAT = :$RAT and $VENDOR = :$VENDOR
+        group by HIER321_ID, HIERARCHY_1, HIER3_ID
+     ) hier_ref
+    where
+        suc.HIER321_ID = hier_ref.HIER321_ID and
+        suc.HIER3_ID = hier_ref.HIER3_ID and
+         #if ($timerange == "TR_4")
+	    	#GET_ADJUSTED_DATETIME_RANGE()
+	    #else
+        	#GET_DATETIME_RANGE()
+        #end
+        #if ($useExclusiveTAC == "no")
+        and #GET_TAC_EXCLUSION_BY_TABLE("suc")
+        #end
+        and $EVENT_ID = :$ApplicationConstants.EVENT_ID_PARAM and suc.$SGSN = :$SGSN
+        and $RAT = :$RAT
+    group by
+        HIERARCHY_1
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+
+##new function used to replace raw view with raw tables
+#macro (REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES_FOR_UNKNOWN_TOPOLOGY $rawtables $rawview $networkType)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+    CAST(suc.HIER321_ID AS VARCHAR(20)) as HIERARCHY_1,
+    sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from dc.$rawtable suc
+    where
+         #if ($timerange == "TR_4")
+	    	#GET_ADJUSTED_DATETIME_RANGE()
+	    #else
+        	#GET_DATETIME_RANGE()
+        #end
+        #if ($useExclusiveTAC == "no")
+        and #GET_TAC_EXCLUSION_BY_TABLE("suc")
+        #end
+        and $EVENT_ID = :$ApplicationConstants.EVENT_ID_PARAM and suc.$SGSN = :$SGSN
+
+        #if($networkType==$ApplicationConstants.LTE)
+            and suc.HIER3_ID = :$BSC
+        #else
+            and suc.HIER3_ID is null
+        #end
+
+        and $RAT = :$RAT
+    group by
+        HIERARCHY_1
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro(KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC $columns $networkType $rawErrTablesToUseInQuery $rawSucTablesToUseInQuery $useExclusiveTAC)
+(    select
+        #GET_NOT_NULL_COLUMN (["suc","err"] $columns)
+        etref.EVENT_ID_DESC ,
+        max(isnull(err.NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+        max(isnull(suc.NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+        NO_OF_ERRORS + NO_OF_SUCCESSES as OCCURRENCES,
+        #CALCULATE_KPI_RATIO() AS KPI,
+        max(isnull(err.NO_OF_TOTAL_ERR_SUBSCRIBERS,0)) as  NO_OF_TOTAL_ERR_SUBSCRIBERS
+    from
+        (select
+            #GET_COLUMNS_BY_TABLE ("temp_err" $columns)
+            count(*),
+            count(distinct(IMSI))
+        from
+            #if ($timerange == "TR_4")
+                #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_CONDITIONED_WEEK($rawErrTablesToUseInQuery "temp_err" $columnsToSelectErrorRAW $conditionToSelectErrorRAW $useExclusiveTAC "")
+            #else
+                #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_CONDITIONED($rawErrTablesToUseInQuery "temp_err" $columnsToSelectErrorRAW $conditionToSelectErrorRAW $useExclusiveTAC "")
+            #end
+        group by
+            #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING ("temp_err" $columns)
+        ) as err (
+            #GET_COLUMNS ($columns)
+            NO_OF_ERRORS,
+            NO_OF_TOTAL_ERR_SUBSCRIBERS)
+
+        full outer join
+        (select
+            #GET_COLUMNS_BY_TABLE ("temp_suc" $columns)
+            sum(NO_OF_SUCCESSES)
+        from
+            #if($isTopologyUnknown)
+                #REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES_FOR_UNKNOWN_TOPOLOGY($rawSucTablesToUseInQuery "temp_suc" $networkType)
+            #else
+                #REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES($rawSucTablesToUseInQuery "temp_suc" $networkType)
+            #end
+        group by
+            #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING ("temp_suc" $columns)
+        ) as suc (
+               #GET_COLUMNS ($columns)
+            NO_OF_SUCCESSES
+        )
+        on (
+            #GET_JOIN("suc" "err" $columns)
+        )
+    ,DIM_E_${networkType}_EVENTTYPE etref where
+    etref.EVENT_ID = :$ApplicationConstants.EVENT_ID_PARAM
+    group by
+        #GET_COLUMNS_BY_TABLE ("err" $columns)
+        #GET_COLUMNS_BY_TABLE ("suc" $columns)
+        etref.EVENT_ID_DESC
+)
+#end
+
+SELECT
+ #if($count > 0)
+      top $count
+ #end 
+$columnsToSelectAsResult 
+FROM (
+    #KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC($columns $ApplicationConstants.SGEH $techPackTablesSGEH.getErrTables() $TECH_PACK_LIST.getSpecificRawTablesWithMeasurementType(["EVENT_E_SGEH_IMSI_SUC_RAW"]) $useExclusiveTAC)
+    #if($techPackTablesLTE.getErrTables().size() > 0)
+        union all
+    #KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC($columns $ApplicationConstants.LTE $techPackTablesLTE.getErrTables() $TECH_PACK_LIST.getSpecificRawTablesWithMeasurementType(["EVENT_E_LTE_IMSI_SUC_RAW"]) $useExclusiveTAC)
+    #end
+    ) as KPI_RATIO_RESULT
+    ,DIM_E_SGEH_RAT ratref
+WHERE
+    ratref.RAT = :$RAT
+ORDER BY
+KPI

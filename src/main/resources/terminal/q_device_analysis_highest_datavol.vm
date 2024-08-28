@@ -1,0 +1,43 @@
+##Device Analysis - device types highest volume summary
+##
+## Description: 
+##     Get device types highest volume summary
+
+#DEFINE_CONSTANTS()
+#set($isgroup=false)
+#set($isGroupDrilldown=false)
+#set($tpUnit = 1048576)
+select
+    #if($count > 0)
+      top $count
+    #end
+    rank() over (order by TOTAL_DATAVOL desc) as RANK,
+    total.TAC,
+    tacref.MANUFACTURER,
+    tacref.MARKETING_NAME,
+    tacref.Band,
+    convert(numeric(16,2), SUM(isnull(convert(numeric(16,2), total.DATAVOL_DL), 0)/$tpUnit)) as TOTAL_DATAVOL_DL,
+    convert(numeric(16,2), SUM(isnull(convert(numeric(16,2), total.DATAVOL_UL), 0)/$tpUnit)) as TOTAL_DATAVOL_UL,
+    TOTAL_DATAVOL_DL+TOTAL_DATAVOL_UL as TOTAL_DATAVOL
+from    
+    (SELECT
+        a.TAC,
+        DATAVOL_DL,
+        DATAVOL_UL
+    FROM
+        #SUM_TAC_DATAVOLS($useAggregationTables $DTPUT_AGGREGATION_TABLES $rawDtputTables $isgroup $isGroupDrilldown)as a(TAC, DATAVOL_UL,DATAVOL_DL)
+    GROUP BY
+        a.TAC,
+        DATAVOL_DL,
+        DATAVOL_UL
+    )as total,
+    dc.DIM_E_SGEH_TAC tacref
+where
+    total.TAC = tacref.TAC
+GROUP BY
+    total.TAC,
+    tacref.MANUFACTURER,
+    tacref.MARKETING_NAME,
+    tacref.Band
+order by
+    RANK

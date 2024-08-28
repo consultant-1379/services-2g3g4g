@@ -1,0 +1,164 @@
+##=============================================================================
+##
+## QOS summary query
+## -----------------------------------
+##
+## List summary data for each QCI (Quality Class Indicator)
+##
+## Parameters:
+##    AGGREGATION_TABLES    aggregation tables to use in query, see the TechPackTables Javadoc for more dteails
+##  rawtables            raw tables to use in query, see the TechPackTables Javadoc for more dteails
+##     COLUMNS_TO_FILTER_ON
+##    columnsForQuery
+##    type
+##    COLUMNS_TO_SELECT_FROM_RAW_TABLES_FOR_QOS_ERR_SUMMARY
+##  COLUMNS_TO_SELECT_FROM_RAW_TABLES_FOR_QOS_SUC_SUMMARY
+##  useAggregationTables boolean indicating whether query should use raw or aggregation tables
+##=============================================================================
+
+#DEFINE_CONSTANTS()
+#set($qciErr="")
+#set($qciSuc="")
+
+#macro(PRIVATE_SELECT_COLUMNS_FROM_TABLES $tables $qciColumn $columns $view)
+    (#foreach ($table in $tables)
+        select
+           $qciColumn,
+           DATETIME_ID,
+           #if($table.contains("ERR_RAW"))
+               IMSI,
+           #end
+           #foreach($column in $columns)
+               $column
+               #if($velocityCount < $columns.size())
+                   ,
+               #end
+           #end
+        from 
+            dc.$table
+        where
+            #GET_DATETIME_RANGE()
+            #if($velocityCount < $tables.size())
+               union all
+            #end
+    #end) as $view
+#end
+
+#macro(PRIVATE_SELECT_COLUMNS_FROM_TABLES_WEEK $tables $qciColumn $columns $view)
+    (#foreach ($table in $tables)
+        select
+           $qciColumn,
+           DATETIME_ID,
+           #if($table.contains("ERR_RAW"))
+               IMSI,
+           #end
+           #foreach($column in $columns)
+               $column
+               #if($velocityCount < $columns.size())
+                   ,
+               #end
+           #end
+        from 
+            dc.$table
+        where
+            #GET_DATE_RANGE_LOCAL()
+            #if($velocityCount < $tables.size())
+               union all
+            #end
+    #end) as $view
+#end
+
+begin
+
+declare local temporary table qci_summary
+(
+    qci_id smallint NULL,
+    qci_description varchar(128) NULL,
+    no_of_errors int NULL,
+    no_of_successes int NULL,
+    impacted_subscribers int NULL
+
+);
+
+#foreach($i in [1..10])
+
+#set($qciErr="QCI_ERR_$i")
+#set($qciSuc="QCI_SUC_$i")
+
+insert into qci_summary (
+select 
+    $i,
+    QCI_ID_DESCRIPTION, 
+    isnull(FAILURES, 0) as FAILURES,
+    isnull(SUCCESSES, 0) as SUCCESSES, 
+    isnull(IMPACTED_SUBSCRIBERS,0) as IMPACTED_SUBSCRIBERS
+    
+from 
+    (select
+        sum($qciErr) as FAILURES
+        #if(!$useAggregationTables)
+            ,count(distinct(IMSI))   as IMPACTED_SUBSCRIBERS
+        #end
+    from
+        #if($useAggregationTables)
+            #PRIVATE_SELECT_COLUMNS_FROM_TABLES($AGGREGATION_TABLES.getErrTables() $qciErr $COLUMNS_TO_FILTER_ON "temp_15min_err")
+        #else
+            #PRIVATE_SELECT_COLUMNS_FROM_TABLES($rawtables.getErrTables() $qciErr $COLUMNS_TO_FILTER_ON "temp_lte_err")
+        #end
+    where
+        #GET_COLUMNS_WHERE($COLUMNS_TO_FILTER_ON)
+        ) as err(FAILURES
+            #if(!$useAggregationTables)
+                ,IMPACTED_SUBSCRIBERS
+            #end
+                ),
+    (select
+        sum($qciSuc) as SUCCESSES
+    from
+        #PRIVATE_SELECT_COLUMNS_FROM_TABLES($AGGREGATION_TABLES.getSucTables() $qciSuc $COLUMNS_TO_FILTER_ON "temp_15min_suc")
+    where
+        #GET_COLUMNS_WHERE($COLUMNS_TO_FILTER_ON)
+        ) as suc(SUCCESSES),
+
+
+#if($useAggregationTables)
+    (select
+        count(distinct(IMSI))
+    from
+        #if ($timerange == "TR_4")
+            #PRIVATE_SELECT_COLUMNS_FROM_TABLES_WEEK($rawtables.getErrTables() $qciErr $COLUMNS_TO_FILTER_ON "temp_lte_err")
+        #else
+            #PRIVATE_SELECT_COLUMNS_FROM_TABLES($rawtables.getErrTables() $qciErr $COLUMNS_TO_FILTER_ON "temp_lte_err")
+        #end
+    where
+        #GET_COLUMNS_WHERE($COLUMNS_TO_FILTER_ON)
+        and $qciErr <> 0
+    ) as sub(IMPACTED_SUBSCRIBERS),
+#end
+
+    (select
+        QCI_ID_DESCRIPTION
+    from
+        dc.DIM_E_LTE_QCI
+    where QCI_NUMBER=$i ) as qci_description
+    );
+#end
+
+#if($csv == true)
+ SET TEMPORARY OPTION Temp_Extract_Name1 = 'csvFileName' ;
+#end
+
+#if($csv == true)
+ SET TEMPORARY OPTION Temp_Extract_Name1 = 'csvFileName' ;
+#end
+
+select 
+    QCI_ID,
+    QCI_DESCRIPTION, 
+    NO_OF_ERRORS,
+    NO_OF_SUCCESSES,
+    IMPACTED_SUBSCRIBERS
+from qci_summary;
+
+drop table qci_summary;
+end

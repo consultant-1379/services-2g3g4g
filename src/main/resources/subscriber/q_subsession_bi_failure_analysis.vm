@@ -1,0 +1,169 @@
+##
+## Subsession Business Intelligence - Failed event analysis
+##
+## Description: 
+##
+##     Summary data for failed events within the time period.
+##
+## Parameter:   IMSI, groupname, DATE_TIME range
+##
+## Author : ehaoswa 
+## Date   : Aug 2010
+
+#DEFINE_CONSTANTS()
+#set($RAW_ERR_TABLES = $techPackTables.getErrTables())
+#set($RAW_SUC_TABLES = $TECH_PACK_LIST.getAllRawTablesWithMeasurementType())
+#set($columnsToSelect=["EVENT_ID"])
+
+#if($groupDefinitions)
+#set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+#set($groupTable = $groupDef.getTableName())
+#set($groupnameColumn = $groupDef.getGroupNameColumn())
+#set($joinKeys = $groupDef.getGroupKeys())
+#set($isgroup=true)
+#else
+#set($isgroup=false)
+#end
+
+#if($type==$TYPE_IMSI)
+    #set($columns=[$IMSI])
+#elseif($type==$TYPE_PTMSI)
+    #set($columns=[$PTMSI])
+#elseif($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+#macro (REPLACE_IMSI_SUC_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #set($tablename="table$rawview")
+
+    #foreach ($rawtable in $rawtables)
+    select
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        ,sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from dc.$rawtable $tablename
+    #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #if ($timerange == "TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+        #else        
+            #GET_DATETIME_RANGE()
+        #end
+        #GET_EXTRA_WHERE_CLAUSE($tablename)
+        group by
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (REPLACE_ERR_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #set($tablename="table$rawview")
+
+    #foreach ($rawtable in $rawtables)
+    select
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        ,count(*) as no_of_failures
+    from dc.$rawtable $tablename
+    #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #if ($timerange == "TR_4")
+            #GET_DATE_RANGE_LOCAL()
+        #else
+            #GET_DATETIME_RANGE()
+        #end
+        #GET_EXTRA_WHERE_CLAUSE($tablename)
+        group by
+        #foreach ($columnToInclude in $columnsToIncludeInNewView)
+            $tablename.$columnToInclude
+            #if($velocityCount < $columnsToIncludeInNewView.size())
+            ,
+            #end
+        #end
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (GET_EXTRA_TABLES_IN_FROM)
+    #if($isgroup)
+        ,$groupTable groupref
+    #elseif($ismsisdn)
+        ,dc.DIM_E_IMSI_MSISDN msisdnMap
+    #end
+#end
+
+#macro (GET_EXTRA_WHERE_CLAUSE $tablename)
+    and
+    #if($isgroup)
+        #GET_JOIN($tablename "groupref" $joinKeys)
+        and $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+    #elseif($ismsisdn)
+        #GET_JOIN($tablename "msisdnMap" $joinKeys)
+        and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+    #else
+        #GET_COLUMNS_WHERE($columns)
+    #end
+#end
+
+begin
+## Temporary table to hold all event type descriptions
+select * into #EVENT_TYPE_TABLE from dc.DIM_E_SGEH_EVENTTYPE;
+insert into #EVENT_TYPE_TABLE select * from dc.DIM_E_LTE_EVENTTYPE;
+
+    select
+        sum(no_of_failures) as No_Of_Failures_Per_Event,
+        sum(no_of_success) as No_Of_Successes_Per_Event,
+        #EVENT_TYPE_TABLE.EVENT_ID_DESC || ',' || EVENT_ID_RESULTS_TABLE.EVENT_ID as Event_Name
+    from
+    (
+        select
+            EVENT_ID,
+            sum(no_of_failures) as no_of_failures,
+            0 as no_of_success
+        from
+             #REPLACE_ERR_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS($RAW_ERR_TABLES "err" $columnsToSelect)
+        group by
+            EVENT_ID
+        union all
+        select
+            EVENT_ID,
+            0 as no_of_failures,
+            sum(NO_OF_SUCCESSES) as no_of_success
+        from
+            #REPLACE_IMSI_SUC_RAW_VIEW_WITH_RAW_TABLES_FILTER_ON_TIME_AND_SPECIFY_COLUMNS($RAW_SUC_TABLES "suc" $columnsToSelect)
+        group by
+            EVENT_ID
+    ) AS EVENT_ID_RESULTS_TABLE,
+    #EVENT_TYPE_TABLE
+    where
+        EVENT_ID_RESULTS_TABLE.EVENT_ID = #EVENT_TYPE_TABLE.EVENT_ID
+    group by
+        EVENT_ID_RESULTS_TABLE.EVENT_ID,
+        #EVENT_TYPE_TABLE.EVENT_ID_DESC
+    order by
+        Event_Name;
+
+drop table #EVENT_TYPE_TABLE;
+end

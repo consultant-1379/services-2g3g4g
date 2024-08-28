@@ -1,0 +1,116 @@
+##=============================================================================
+##
+## Ranking
+##
+## Description: 
+## Ranking query that queries the aggregation tables for ranking results
+##  
+## Velocity parameter:
+##
+## type : TAC
+##  
+## count : number of rows returned
+## techPackTables: see javadoc on TechPackTables
+## 
+##
+## ## Named PreparedStatement Parameter:
+##
+##    :dateFrom - starting time
+##    :dateTo - ending time
+##  
+##=============================================================================
+#macro(SELECT_DATA_TIERED_RANKING_DATA $columnsForQuerys $techPacks $useExclusiveTAC)
+SELECT
+    #GET_NOT_NULL_COLUMN(["temp_err", "temp_suc"] $columnsForQuerys)
+    sum(isnull(NO_OF_ERRORS, 0))                       AS NO_OF_ERRORS,
+    sum(isnull(NO_OF_SUCCESSES,0))                     AS NO_OF_SUCCESSES
+FROM
+    (
+    select
+        #GET_COLUMNS($columnsForQuerys)
+        sum(isnull(NO_OF_ERRORS, 0)) as NO_OF_ERRORS
+    from
+    (
+    #foreach($techPack in $techPacks)
+        #SELECT_RANKING_DATA_FOR_ERROR($columnsForQuerys $techPack.getRawErrTables() $useExclusiveTAC)
+
+        #if($velocityCount < $techPacks.size())
+            union all
+        #end
+    #end
+    ) as temp_error
+    group by
+    #GET_COLUMNS_NO_COMMA_TRAILING($columnsForQuerys)
+    ) as temp_err (#GET_COLUMNS($columnsForQuerys) NO_OF_ERRORS)
+LEFT OUTER JOIN
+    (
+    select
+        #GET_COLUMNS($columnsForQuerys)
+        sum(isnull(NO_OF_SUCCESSES, 0)) as NO_OF_SUCCESSES
+    from
+    (
+    #foreach($techPack in $techPacks)
+        #SELECT_RANKING_DATA_FOR_SUCCESS($columnsForQuerys $techPack.getSucAggregationView())
+
+        #if($velocityCount < $techPacks.size())
+            union all
+        #end
+    #end
+    ) as temp_success
+    group by
+    #GET_COLUMNS_NO_COMMA_TRAILING($columnsForQuerys)
+    ) as temp_suc (#GET_COLUMNS($columnsForQuerys) NO_OF_SUCCESSES)
+ON(
+    #GET_JOIN("temp_err" "temp_suc" $columnsForQuerys)
+)
+GROUP BY
+    #GET_COLUMNS_WITH_TABLE_NAMES(["temp_err", "temp_suc"] $columnsForQuerys)
+#end
+
+#macro(SELECT_RANKING_DATA_FOR_ERROR $columns $errRawTable $useExclusiveTAC)
+    select
+        #GET_COLUMNS($columns)
+        count(*) as NO_OF_ERRORS
+    from
+        #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_CONDITIONED($errRawTable "err" $columns "" $useExclusiveTAC "")
+    group by
+        #GET_COLUMNS_NO_COMMA_TRAILING($columns)
+#end
+
+#macro(SELECT_RANKING_DATA_FOR_SUCCESS $columns $sucAggTable)
+    select
+        #GET_COLUMNS($columns)
+        sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from
+        $sucAggTable
+    where
+        #GET_DATETIME_RANGE()
+        and #GET_TAC_EXCLUSION()
+    group by
+        #GET_COLUMNS_NO_COMMA_TRAILING($columns)
+#end
+
+#DEFINE_CONSTANTS()
+#set($useExclusiveTACs="no")
+
+SELECT 
+    #if($count > 0)
+      top $count
+    #end
+    rank() over (order by NO_OF_ERRORS desc) as RANK,
+    isnull(tac_ref.MANUFACTURER, 'Manufacturer Unknown') AS MANUFACTURER,
+    isnull(tac_ref.Marketing_Name,  'Model Unknown') AS MARKETING_NAME,
+    #GET_COLUMNS_BY_TABLE("temp_result" $columnsForQuery)
+    sum(NO_OF_ERRORS) as NO_OF_ERRORS,
+    sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+FROM
+    (
+    #SELECT_DATA_TIERED_RANKING_DATA($columnsForQuery $TECH_PACK_LIST.getTechPacks() $useExclusiveTACs)
+    ) AS temp_result
+    , DIM_E_SGEH_TAC tac_ref
+WHERE
+    tac_ref.TAC =* temp_result.TAC
+GROUP BY
+    #GET_COLUMNS_BY_TABLE("temp_result" $columnsForQuery)
+    MANUFACTURER,
+    MARKETING_NAME

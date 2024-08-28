@@ -1,0 +1,52 @@
+##=============================================================================
+##
+## Cause code query returning all codes for the cause code table
+##
+##
+##
+## 12-10-2010 estepdu Update for FOA issue to only select GTP i.e. DIM_E_SGEH_CAUSE_PROT_TYPE GTP =1
+## 
+##=============================================================================
+SELECT
+    CAUSE_PROT_TYPE_DESC,
+    CAUSE_CODE,
+    CAUSE_CODE_DESC,
+    CAUSE_CODE_HELP
+    
+FROM
+    (
+    (
+        SELECT
+            CAUSE_PROT_TYPE_DESC,
+            CAUSE_CODE,
+            CAUSE_CODE_DESC,
+            CAUSE_CODE_HELP
+            
+        FROM
+            dc.DIM_E_SGEH_CAUSECODE AS SGEH_CC
+        INNER JOIN
+            dc.DIM_E_SGEH_CAUSE_PROT_TYPE AS SGEH_PROT
+        ON
+            SGEH_CC.CAUSE_PROT_TYPE = SGEH_PROT.CAUSE_PROT_TYPE)
+UNION ALL
+    (
+        SELECT
+            CAUSE_PROT_TYPE_DESC,
+            CAUSE_CODE,
+            CAUSE_CODE_DESC,
+            CAUSE_CODE_HELP
+            
+        FROM
+            dc.DIM_E_LTE_CAUSECODE AS LTE_CC
+        INNER JOIN
+            dc.DIM_E_LTE_CAUSE_PROT_TYPE AS LTE_PROT
+        ON
+            LTE_CC.CAUSE_PROT_TYPE = LTE_PROT.CAUSE_PROT_TYPE) ) AS LTE
+GROUP BY
+    CAUSE_CODE,
+    CAUSE_PROT_TYPE_DESC,
+    CAUSE_CODE_DESC,
+    CAUSE_CODE_HELP
+ORDER BY
+    CAUSE_CODE,
+    CAUSE_PROT_TYPE_DESC

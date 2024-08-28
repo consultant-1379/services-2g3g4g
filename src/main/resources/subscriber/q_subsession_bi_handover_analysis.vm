@@ -1,0 +1,174 @@
+##
+## Subsession Business Intelligence - TAU and Handover Event Analysis
+##
+## Parameter:   IMSI or IMSI_GROUP, DATE_TIME range, EVENT_TYPE
+##
+## Date   : Feb 2014
+
+#DEFINE_CONSTANTS()
+
+#if($groupDefinitions)
+    #set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+    #set($groupTable = $groupDef.getTableName())
+    #set($groupnameColumn = $groupDef.getGroupNameColumn())
+    #set($joinKeys = $groupDef.getGroupKeys())
+    #set($isgroup=true)
+#else
+    #set($isgroup=false)
+#end
+
+## set Event ID to that of Tau event
+#set($event_id = 7)
+
+#if($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+#set($columns=["EVENT_SUBTYPE_ID","HIERARCHY_1","VENDOR"])
+#set($columnsSuc=["HIER3_ID","HIER321_ID","EVENT_SUBTYPE_ID"])
+#set($imsiColumn=["IMSI"])
+
+
+#set($RAW_ERR_TABLES = $techPackTablesLTE.getErrTables())
+#set($RAW_SUC_TABLES = $TECH_PACK_LIST.getSpecificRawTablesWithMeasurementType(["EVENT_E_LTE_IMSI_SUC_RAW"]))
+
+
+#macro (REPLACE_ERR_RAW_VIEW_WITH_AGG_TABLES $rawtables $rawview)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+        EVENT_SUBTYPE_ID,
+        HIERARCHY_1,
+        err.VENDOR,
+        count(*) as no_of_errors
+    from dc.$rawtable err
+        #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #if ($timerange == "TR_4")
+            #GET_DATE_RANGE_LOCAL()
+         #else
+            #GET_DATETIME_RANGE()
+        #end 
+    and EVENT_ID = $event_id
+        #USE_JOIN_KEYS($rawview)
+    group by
+        EVENT_SUBTYPE_ID,
+        HIERARCHY_1,
+        err.VENDOR
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES_AND_HIERARCHY $rawtables $rawview)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+        HIER3_ID ,
+        HIER321_ID ,
+        EVENT_SUBTYPE_ID ,
+        sum(NO_OF_SUCCESSES) as NO_OF_SUCCESSES
+    from dc.$rawtable suc
+        #GET_EXTRA_TABLES_IN_FROM()
+    where
+        #if ($timerange == "TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+        #else
+            #GET_DATETIME_RANGE()
+        #end
+    and EVENT_ID = $event_id
+        #USE_JOIN_KEYS($rawview)
+    group by
+        HIER3_ID ,
+        HIER321_ID ,
+        EVENT_SUBTYPE_ID
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+
+#macro (DIM_JOIN_HIER321  $rawview)
+(
+SELECT
+    VENDOR,
+    HIER321_ID,
+    HIERARCHY_1
+FROM
+    DIM_E_LTE_HIER321
+GROUP BY
+    VENDOR,
+    HIER321_ID,
+    HIERARCHY_1
+) as $rawview
+#end
+
+
+#macro (USE_JOIN_KEYS $raw)
+    #if($isgroup)
+    and #GET_JOIN($raw "groupref" $joinKeys)
+    and $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+    #elseif($ismsisdn)
+    and #GET_JOIN($raw "msisdnMap" $joinKeys)
+    and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+    #end
+#end
+
+select
+    SUM(DT.err) as NO_OF_FAILURES,
+    SUM(DT.suc) as NO_OF_SUCCESSES,
+    DT.HIERARCHY_1 || ',' || DT.VENDOR AS ECELL
+from
+    (
+    select
+        EVENT_SUBTYPE_ID,
+        err.HIERARCHY_1,
+        err.VENDOR,
+        sum(no_of_errors) as err,
+        0  		as suc
+    from
+        #if($isgroup||$ismsisdn)
+            #REPLACE_ERR_RAW_VIEW_WITH_AGG_TABLES($RAW_ERR_TABLES "err")
+        #else
+            #REPLACE_ERR_RAW_VIEW_WITH_RAW_TABLES_AND_FILTER_COLUMNS_SPECIFY_COLUMNS_WITH_EVENT_ID($RAW_ERR_TABLES "err" $imsiColumn $columns $event_id)
+        #end
+    group by
+        EVENT_SUBTYPE_ID,
+        err.HIERARCHY_1,
+        err.VENDOR
+union all
+    select
+        EVENT_SUBTYPE_ID,
+        isnull(HIERARCHY_1, CAST(suc.HIER321_ID AS VARCHAR(20))) as HIERARCHY_1,
+        isnull(hier_ref.VENDOR, 'Unknown') as Vendor,
+        0 			as err,
+        sum(NO_OF_SUCCESSES) as suc
+    from
+        #if($isgroup||$ismsisdn)
+            #REPLACE_SUC_RAW_VIEW_WITH_IMSI_AGG_TABLES_AND_HIERARCHY($RAW_SUC_TABLES "suc")
+        #else
+            #REPLACE_IMSI_SUC_RAW_VIEW_WITH_RAW_TABLES_AND_FILTER_COLUMNS_SPECIFY_COLUMNS_WITH_EVENT_ID($RAW_SUC_TABLES "suc" $imsiColumn $columnsSuc $event_id)
+        #end
+        ,#DIM_JOIN_HIER321("hier_ref")
+    WHERE
+        suc.HIER321_ID *= hier_ref.HIER321_ID
+    group by
+        EVENT_SUBTYPE_ID ,
+        HIERARCHY_1,
+        hier_ref.VENDOR,
+        suc.HIER321_ID
+    ) AS DT,
+        dc.DIM_E_LTE_EVENT_SUBTYPE TU
+    where
+        DT.EVENT_SUBTYPE_ID = TU.EVENT_SUBTYPE_ID
+        and TU.EVENT_ID = $event_id
+    group by
+        ECELL
+
+
+

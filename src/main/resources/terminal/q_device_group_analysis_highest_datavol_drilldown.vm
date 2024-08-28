@@ -1,0 +1,30 @@
+##
+## Device Analysis - device group highest datavol drilldown
+##
+## Description: 
+##     Drilldown by device group for highest datavol analysis
+
+#DEFINE_CONSTANTS()
+#set($isgroup=true)
+#set($isGroupDrilldown=true)
+#set($tpUnit = 1048576)
+select
+    a.TAC as TAC,
+    tacref.MANUFACTURER,
+    isnull(tacref.Marketing_Name, convert(varchar(12),TAC)) as Marketing_Name,
+    convert(numeric(16,2), SUM(isnull(convert(numeric(16,2), a.DATAVOL_DL), 0)/$tpUnit)) as TOTAL_DATAVOL_DL,
+    convert(numeric(16,2), SUM(isnull(convert(numeric(16,2), a.DATAVOL_UL), 0)/$tpUnit)) as TOTAL_DATAVOL_UL,
+    TOTAL_DATAVOL_DL+TOTAL_DATAVOL_UL as TOTAL_DATAVOL
+from
+    #SUM_TAC_DATAVOLS($useAggregationTables $DTPUT_AGGREGATION_TABLES $rawDtputTables $isgroup $isGroupDrilldown)as a(TAC, DATAVOL_UL,DATAVOL_DL)
+    left outer join
+        dc.DIM_E_SGEH_TAC tacref
+    on(
+        tacref.TAC=a.TAC
+    )
+group by
+    TAC,
+    tacref.MANUFACTURER,
+    tacref.MARKETING_NAME
+order by
+    TOTAL_DATAVOL

@@ -1,0 +1,186 @@
+##=============================================================================
+##
+## Network Analysis : group failure analysis that goes to the aggregation tables
+##
+## Description:
+##
+##    Failure analysis for nominated group
+##
+## Parameter:
+##
+## type : one of { APN, TAC, IMSI}
+##
+## timerange : one of { TR_1, TR_2, TR_3, TR_4}
+##
+##     TR_1 : normally query against raw events
+##     TR_2 : normally query against 1min agg
+##     TR_3 : normally query against 15min agg
+##     TR_4 : normally query against daily agg
+##
+## Named PreparedStatement Parameter:
+##
+##    :dateFrom   starting time
+##    :dateTo     ending time
+##    :GROUP_NAME nominated group name
+##
+##=============================================================================
+
+#macro(SELECT_FROM_AGGREGATION_AND_GROUP_TABLES $tableName)
+    select
+        EVENT_ID,
+        #if($tableName.contains("ERR"))
+            sum(NO_OF_ERRORS)
+        #else
+            sum(NO_OF_SUCCESSES)
+        #end
+    from
+        $tableName temp,
+        $groupTable temp_group
+    where
+        #GET_DATETIME_RANGE()
+        and #GET_JOIN("temp" "temp_group" $joinKeys)
+        and temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+    group by
+        EVENT_ID
+    having
+        EVENT_ID between 0 and 255    ##EVENT_ID is a tinyint in database
+#end
+
+#macro (REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS $rawtables $rawview)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+        temp_sub.EVENT_ID,
+        temp_sub.IMSI
+    from dc.$rawtable temp_sub,
+    $groupTable temp_group
+    where
+    	temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+        and #GET_JOIN("temp_sub" "temp_group" $joinKeys) and
+      	
+      	#if ($timerange == "TR_4")
+    		#GET_DATE_RANGE_LOCAL()
+    	#else
+        	#GET_DATETIME_RANGE()
+        #end
+        
+        #if($type != $ApplicationConstants.TYPE_TAC)
+			and ISNULL(temp_sub.TAC,-1) not in (select TAC from dc.GROUP_TYPE_E_TAC where GROUP_NAME = 'EXCLUSIVE_TAC')
+		#end
+		group by temp_sub.IMSI, temp_sub.EVENT_ID
+		
+        #if($velocityCount < $rawtables.size())
+        	union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS_APN $rawtables $rawview)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+        temp_sub.EVENT_ID,
+        temp_sub.IMSI
+    from dc.$rawtable temp_sub
+    where
+    	#if ($timerange == "TR_4")
+    		#GET_DATE_RANGE_LOCAL()
+    	#else
+        	#GET_DATETIME_RANGE()
+        #end
+
+		AND temp_sub.$joinKeys.get(0) in (SELECT $joinKeys.get(0) from dc.$groupTable temp_group where temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM)
+        #if($type != $ApplicationConstants.TYPE_TAC)
+			and ISNULL(temp_sub.TAC,-1) not in (select TAC from dc.GROUP_TYPE_E_TAC where GROUP_NAME = 'EXCLUSIVE_TAC')
+		#end
+		group by temp_sub.IMSI, temp_sub.EVENT_ID
+		
+        #if($velocityCount < $rawtables.size())
+        	union all
+        #end
+    #end
+) as $rawview
+#end
+
+#DEFINE_CONSTANTS()
+#SET_GROUP_TYPE($type)
+
+#if(${groupDefinitions})
+#set($groupDef = $groupDefinitions.get($groupType))
+#set($groupTable = $groupDef.getTableName())
+#set($groupnameColumn = $groupDef.getGroupNameColumn())
+#set($joinKeys = $groupDef.getGroupKeys())
+#set($isgroup=true)
+#else
+#set($isgroup=false)
+#end
+
+#set($sucViewName="suc")
+#set($errViewName="err")
+#set($nonDtPdpTables=[$ApplicationConstants.EVENT_E_LTE_TPNAME, $ApplicationConstants.EVENT_E_SGEH_TPNAME])
+
+select
+    :$ApplicationConstants.GROUP_NAME_PARAM as SYS_COL_$groupnameColumn,
+    isnull(err.EVENT_ID,suc.EVENT_ID) as SYS_COL_EVENT_ID,
+    isnull(etref.EVENT_ID_DESC,lteEventType.EVENT_ID_DESC) as EVENT_ID_DESC,
+    sum(isnull(NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+    NO_OF_ERRORS+NO_OF_SUCCESSES as OCCURRENCES,
+    #CALCULATE_KPI_RATIO() AS KPI,
+    sum(isnull(NO_OF_TOTAL_ERR_SUBSCRIBERS,0)) as NO_OF_TOTAL_ERR_SUBSCRIBERS
+from
+    (    #foreach ($aggTable in $TECH_PACK_LIST.getErrAggregationViewsForTechPacks($nonDtPdpTables))
+            #if ( $velocityCount == 1)
+                #SELECT_FROM_AGGREGATION_AND_GROUP_TABLES($aggTable)
+            #else
+                union all
+                #SELECT_FROM_AGGREGATION_AND_GROUP_TABLES($aggTable)
+            #end
+        #end
+    ) as err(EVENT_ID, NO_OF_ERRORS)
+    full outer join
+    ( #foreach ($aggTable in $TECH_PACK_LIST.getSucAggregationViewsForTechPacks($nonDtPdpTables))
+            #if ( $velocityCount == 1)
+                #SELECT_FROM_AGGREGATION_AND_GROUP_TABLES($aggTable)
+            #else
+                union all
+                #SELECT_FROM_AGGREGATION_AND_GROUP_TABLES($aggTable)
+            #end
+        #end
+    )as suc(EVENT_ID, NO_OF_SUCCESSES)
+    on(
+        err.EVENT_ID = suc.EVENT_ID
+    )
+    full outer join
+    (select
+        EVENT_ID,
+        count(distinct(IMSI))
+    from
+    	#if (($groupTable.toString().indexOf("GROUP_TYPE_E_APN") > -1))
+    		#REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS_APN($TECH_PACK_LIST.getAllRawErrTables() "temp_sub")
+    	#else
+    		#REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS($TECH_PACK_LIST.getAllRawErrTables() "temp_sub")        
+		#end
+    group by
+        EVENT_ID
+    ) as sub(EVENT_ID, NO_OF_TOTAL_ERR_SUBSCRIBERS)
+    on(
+        #GET_MULTI_JOIN(["suc", "err"] "sub" ["EVENT_ID"])
+    )
+    left outer join
+        dc.DIM_E_SGEH_EVENTTYPE etref
+    on(
+        #GET_MULTI_JOIN(["suc","err","sub"] "etref" ["EVENT_ID"])
+    )
+    left outer join
+        dc.DIM_E_LTE_EVENTTYPE lteEventType
+    on(
+        #GET_MULTI_JOIN(["suc","err","sub"] "lteEventType" ["EVENT_ID"])
+    )
+group by
+    SYS_COL_EVENT_ID,
+    EVENT_ID_DESC
+having
+    SYS_COL_EVENT_ID between 0 and 255
+    ##EVENT_ID is a tinyint in database

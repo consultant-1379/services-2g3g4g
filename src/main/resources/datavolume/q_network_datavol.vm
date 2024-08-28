@@ -1,0 +1,241 @@
+##=============================================================================
+## Since July 2011
+##
+## Data Volume by Network Entity
+##
+##
+##Description:
+##
+##Gets the data volume by APN, IMSI, TAC, MSISDN and Network
+##=============================================================================
+#DEFINE_CONSTANTS()
+#SET_GROUP_TYPE($type)
+
+#macro (PRIVATE_REPLACE_RAW_VIEW_WITH_RAW_TABLES_FOR_DISTINCT_COUNT $rawtables $viewName $columnToCount $isTypeNode $isgroup $joinKeys $columns)
+(
+    #foreach ($rawtable in $rawtables)
+    select
+        temp_dt.$columnToCount
+    ,date_id AS tmp_st
+    from dc.$rawtable as temp_dt
+    #if($isgroup)
+                ,$groupTable temp_group
+    #end
+    where
+                    #if($isTypeNode)
+                                #if($isgroup)
+                                        #GET_JOIN("temp_dt" "temp_group" $joinKeys)
+                                    AND temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+                                #else
+                                        #GET_COLUMNS_WHERE($columns)
+                                #end
+                                AND
+                            #end
+                    date_id >= :dateFrom AND date_id < :dateTo
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $viewName
+#end
+
+#if($useAggregationTables)
+#set($dtTables=$techPackTables.getTechPacks().get(0).getDtTables())
+#set($dtRawTables=$techPackTables.getTechPacks().get(1).getDtTables())
+#else
+#foreach($techPack in $techPackTables.getTechPacks())
+    #set($dtTables=$techPack.getDtTables())
+#end
+#end
+
+#set($dtSelectColumns = ["APN", "IMSI","TAC", "MSISDN", "DURATION", "DATAVOL_DL", "DATAVOL_UL", "DATETIME_ID", "PDNID_GGSNIP"])
+#if(${type}==$TYPE_IMSI || !$isTypeNode)
+#set($dtRawSelectColumns = ["IMSI", "DATETIME_ID", "PDNID_GGSNIP"])
+#else
+#set($dtRawSelectColumns = ["$type", "IMSI", "DATETIME_ID", "PDNID_GGSNIP"])
+#end
+
+#if(${type}==$TYPE_MSISDN)
+#set($dtRawMSISDNColumns = ["IMSI", "MSISDN", "DATETIME_ID"])
+#end
+
+#if(${groupDefinitions})
+#set($groupDef = $groupDefinitions.get($groupType))
+#set($groupTable = $groupDef.getTableName())
+#set($groupnameColumn = $groupDef.getGroupNameColumn())
+#set($joinKeys = $groupDef.getGroupKeys())
+#set($isgroup=true)
+#else
+#set($isgroup=false)
+#end
+
+#if(${type}==$TYPE_APN)
+#set($columns=[$APN])
+#elseif(${type}==$TYPE_IMSI)
+#set($columns=[$IMSI])
+#elseif(${type}==$TYPE_TAC)
+#set($columns=[$TAC])
+#elseif(${type}==$TYPE_MSISDN)
+#set($columns=[$MSISDN])
+#end
+
+#if(${type}==$TYPE_IMSI|| ${type}==$TYPE_MSISDN)
+#set($tpUnit=1024)
+#else
+#set($tpUnit=1048576)
+#end
+#set($secUnit=1000)
+
+
+begin
+
+select
+    dateformat(dttable.TS,
+    #if($timerange=="TR_4") 'yyyy-MM-dd 00:00'
+    #else 'yyyy-MM-dd HH:mm'
+    #end ) as TS,
+    convert(numeric(16,2), MAX(convert(numeric(16,2), DATAVOL_DL)/$tpUnit)) as DATAVOL_DL,
+    convert(numeric(16,2), MAX(convert(numeric(16,2), DATAVOL_UL)/$tpUnit)) as DATAVOL_UL,
+    Max(THROUGHPUT_DL) as THROUGHPUT_DL,
+    Max(THROUGHPUT_UL) as THROUGHPUT_UL,
+    #if(${type} == $TYPE_APN || ${type}==$TYPE_TAC || !$isTypeNode)
+    isnull(MAX(NO_OF_SUBSCRIBER),0) as NO_OF_SUBSCRIBER,
+    #end
+    isnull(Max(NO_OF_SESSION),0) as NO_OF_SESSION
+from
+       (select
+               #if($timerange=="TR_4")date_id AS
+               #end
+            tmp_st,
+            SUM(temp_dt.DATAVOL_DL),
+            SUM(temp_dt.DATAVOL_UL),
+        #if($useAggregationTables)
+            (convert(numeric(16,2),(convert(numeric(16,2), SUM(temp_dt.DATAVOL_DL))/$tpUnit*8/(convert(numeric(16,2),SUM(temp_dt.DURATION)))))),
+            (convert(numeric(16,2),(convert(numeric(16,2), SUM(temp_dt.DATAVOL_UL))/$tpUnit*8/(convert(numeric(16,2),SUM(temp_dt.DURATION))))))
+        from
+                $dtTables temp_dt
+        #else
+            (convert(numeric(16,2),(convert(numeric(16,2), SUM(temp_dt.DATAVOL_DL))/$tpUnit*8/(convert(numeric(16,2),SUM(temp_dt.DURATION))/$secUnit)))),
+            (convert(numeric(16,2),(convert(numeric(16,2), SUM(temp_dt.DATAVOL_UL))/$tpUnit*8/(convert(numeric(16,2),SUM(temp_dt.DURATION))/$secUnit))))
+            #if(${type} == $TYPE_APN || ${type}==$TYPE_TAC || !$isTypeNode)
+            , count (distinct(temp_dt.IMSI))
+            #end
+            , count(distinct temp_dt.PDNID_GGSNIP)
+        from
+            #REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS($dtTables "temp_dt" $dtSelectColumns)
+        #end
+            #if($isgroup)
+                ,$groupTable temp_group
+            #end
+            #if($timerange!="TR_4"), #GET_CHART_TIMES($starttime $endtime $interval)
+            #end
+            #if(${type}==$TYPE_MSISDN && $useAggregationTables)
+            , #REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS($dtRawTables "raw_table" $dtRawMSISDNColumns)
+            #end
+                        where
+                            #if($isTypeNode)
+                                #if($isgroup)
+                                        #GET_JOIN("temp_dt" "temp_group" $joinKeys)
+                                    AND temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+                                #else
+                                        #GET_COLUMNS_WHERE($columns)
+                                        #if(${type}==$TYPE_MSISDN && $useAggregationTables)
+                                            AND raw_table.imsi = temp_dt.imsi
+                                            #if($timerange!="TR_4")
+                                            AND raw_table.DATETIME_ID < tmp_et
+                                            AND raw_table.DATETIME_ID >= tmp_st
+                                            #end
+                                        #end
+                                #end
+                                AND
+                            #end
+                            #if($timerange!="TR_4")
+                            temp_dt.DATETIME_ID >= tmp_st
+                            AND temp_dt.DATETIME_ID < tmp_et
+                            AND (temp_dt.DATETIME_ID >= :dateFrom and temp_dt.DATETIME_ID < :dateTo)
+                            #else
+                            DATE_ID >= :dateFrom and DATE_ID < :dateTo
+                            #end
+                            group by
+                            tmp_st
+                    ) as dttable(TS,DATAVOL_DL,DATAVOL_UL,THROUGHPUT_DL,THROUGHPUT_UL
+                    #if(!$useAggregationTables )
+                        #if(${type} == $TYPE_APN || ${type}==$TYPE_TAC || !$isTypeNode)
+                            ,NO_OF_SUBSCRIBER
+                        #end
+                            ,NO_OF_SESSION
+                    #end
+                    )
+
+    #if($useAggregationTables)
+    #if( $timerange!="TR_4")
+    LEFT OUTER JOIN
+            (select
+            tmp_st,
+            #if(${type} == $TYPE_APN || ${type}==$TYPE_TAC || !$isTypeNode)
+                count (distinct(temp_dt2.IMSI)) ,
+            #end
+            count(distinct temp_dt2.PDNID_GGSNIP)
+            from
+                #REPLACE_RAW_VIEW_WITH_RAW_TABLES_AND_SPECIFY_COLUMNS($dtRawTables "temp_dt2" $dtRawSelectColumns),
+                #if($isgroup)
+                $groupTable temp_group ,
+                #end
+                #GET_CHART_TIMES($starttime $endtime $interval)
+                        where
+                            #if($isTypeNode)
+                                #if($isgroup)
+                                        #GET_JOIN("temp_dt2" "temp_group" $joinKeys)
+                                    AND temp_group.$groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+                                #else
+                                        #GET_COLUMNS_WHERE($columns)
+                                #end
+                                AND
+                            #end
+                            temp_dt2.DATETIME_ID >= tmp_st
+                            AND temp_dt2.DATETIME_ID < tmp_et
+                            AND (temp_dt2.DATETIME_ID >= :dateFrom and temp_dt2.DATETIME_ID < :dateTo)
+                            group by
+                            tmp_st
+                    ) as dtrawtable(TS,
+                        #if(${type} == $TYPE_APN || ${type}==$TYPE_TAC || !$isTypeNode)
+                            NO_OF_SUBSCRIBER,
+                        #end
+                            NO_OF_SESSION)
+    ON dttable.TS = dtrawtable.TS
+
+    #else
+    LEFT JOIN (
+        SELECT subscriber_count.tmp_st
+            ,no_subscriber
+            ,no_session
+        FROM (
+            SELECT tmp_st
+                ,count(IMSI)
+            FROM (
+                    SELECT temp_dt.IMSI
+                    ,tmp_st
+                    FROM
+                    #PRIVATE_REPLACE_RAW_VIEW_WITH_RAW_TABLES_FOR_DISTINCT_COUNT($dtRawTables "temp_dt" "IMSI" $isTypeNode $isgroup $joinKeys $columns)
+                    GROUP BY tmp_st,temp_dt.IMSI
+                ) t
+            GROUP BY tmp_st) subscriber_count(tmp_st, no_subscriber)
+        LEFT JOIN (
+            SELECT tmp_st
+                ,count(PDNID_GGSNIP)
+            FROM (
+                    SELECT PDNID_GGSNIP
+                    ,tmp_st
+                    FROM
+                    #PRIVATE_REPLACE_RAW_VIEW_WITH_RAW_TABLES_FOR_DISTINCT_COUNT($dtRawTables "temp_dt" "PDNID_GGSNIP" $isTypeNode $isgroup $joinKeys $columns)
+                    GROUP BY tmp_st,PDNID_GGSNIP
+                ) t
+            GROUP BY tmp_st)    session_count(tmp_st, no_session) ON subscriber_count.tmp_st = session_count.tmp_st
+        ) AS dtrawtable(TS, NO_OF_SUBSCRIBER, NO_OF_SESSION) ON dttable.TS = dtrawtable.TS
+    #end
+#end
+GROUP BY
+TS
+ORDER BY
+TS
+end

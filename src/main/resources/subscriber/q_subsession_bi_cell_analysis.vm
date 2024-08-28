@@ -1,0 +1,268 @@
+##
+## Subsession Business Intelligence - Cell analysis
+##
+## Description: 
+##
+##     Summary data for each cell the user was in within the time period.
+##
+## Parameter:   IMSI, groupname, DATE_TIME range
+##
+## Author : ehaoswa 
+## Date   : Aug 2010
+##
+## Changes:
+## by eavidat on 10/11/10 for updating performance (using RAW tables instead of RAW view)
+
+#DEFINE_CONSTANTS()
+#set($RAW_ERR_TABLES = $techPackTables.getErrTables())
+#set($IMSI_SUC_TABLES = $TECH_PACK_LIST.getAllRawTablesWithMeasurementType())
+#set($columns=[$RAT,$VENDOR,$BSC,$CELL])
+#set($columnsToSelect=["RAT","VENDOR","HIERARCHY_3","HIERARCHY_1","COUNT(*) as cnt"])
+#set($columnsToSelectSucRaw=["RAT","HIER3_ID","HIER321_ID"])
+#set($LTE_TOPOLOGY_TABLE = "DIM_E_LTE_HIER321")
+#set($SGEH_TOPOLOGY_TABLE = "DIM_E_SGEH_HIER321")
+
+#if($groupDefinitions)
+    #set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+    #set($groupTable = $groupDef.getTableName())
+    #set($groupnameColumn = $groupDef.getGroupNameColumn())
+    #set($joinKeys = $groupDef.getGroupKeys())
+    #set($isgroup=true)
+#else
+    #set($isgroup=false)
+#end
+
+#if($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+#set($imsiColumn=[$IMSI])
+
+#set($IMSI_SUC_LTE_TABLES = [])
+#foreach ($rawtable in $IMSI_SUC_TABLES)
+    #if($rawtable.contains("LTE"))
+        #set($isElementAdded = $IMSI_SUC_LTE_TABLES.add("$rawtable"))
+    #end
+#end
+
+#set($IMSI_SUC_SGEH_TABLES = [])
+#foreach ($rawtable in $IMSI_SUC_TABLES)
+    #if($rawtable.contains("SGEH"))
+        #set($isElementAdded = $IMSI_SUC_SGEH_TABLES.add("$rawtable"))
+    #end
+#end
+
+
+
+##this function get IMSI raw tables and specifies columns to be contained in the result set
+#macro (PRIVATE_REPLACE_RAW_IMSI_VIEW_WITH_RAW_TABLES $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #foreach ($rawtable in $rawtables)
+        select
+            #foreach ($columnToInclude in $columnsToIncludeInNewView)
+                $columnToInclude
+                #if($velocityCount < $columnsToIncludeInNewView.size())
+                ,
+                #end
+            #end
+            ,sum (NO_OF_SUCCESSES)   as NO_OF_SUCCESSES
+        from dc.$rawtable AS raw
+
+        #if($isgroup)
+            , dc.$groupTable groupref
+            where
+            #GET_JOIN("raw" "groupref" $joinKeys)
+            AND $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+                AND
+               #if ($timerange == "TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+            #else
+                #GET_DATETIME_RANGE()
+                #end
+        #elseif($ismsisdn)
+            where
+            #if ($timerange == "TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+            #else
+            #GET_DATETIME_RANGE()
+            #end
+            and IMSI in (select IMSI from dc.DIM_E_IMSI_MSISDN where MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase())
+        #else
+            where
+            #if ($timerange == "TR_4")
+            #GET_ADJUSTED_DATETIME_RANGE()
+            #else
+            #GET_DATETIME_RANGE()
+            #end
+            and #GET_COLUMNS_WHERE($imsiColumn)
+        #end
+            group by
+                RAT,
+                HIER3_ID,
+                HIER321_ID
+            #if($velocityCount < $rawtables.size())
+            union all
+            #end
+    #end
+) as $rawview
+#end
+
+##new function to replace raw views with raw tables and specify columns to be contained in the result set
+##this function filters only on the datetime range
+#macro (PRIVATE_REPLACE_RAW_ERR_VIEW_WITH_RAW_TABLES $rawtables $rawview $columnsToIncludeInNewView)
+(
+    #foreach ($rawtable in $rawtables)
+        select
+            #foreach ($columnToInclude in $columnsToIncludeInNewView)
+                $columnToInclude
+                #if($velocityCount < $columnsToIncludeInNewView.size())
+                ,
+                #end
+            #end
+        from dc.$rawtable AS raw
+        #if($isgroup)
+            , dc.$groupTable groupref
+            where
+                #GET_JOIN("raw" "groupref" $joinKeys)
+            AND $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM
+            AND
+                #if ($timerange == "TR_4")
+                #GET_DATE_RANGE_LOCAL()
+                #else
+                #GET_DATETIME_RANGE()
+                #end
+        #elseif($ismsisdn)
+            where
+            #if ($timerange == "TR_4")
+            #GET_DATE_RANGE_LOCAL()
+            #else
+            #GET_DATETIME_RANGE()
+            #end
+            and IMSI in (select IMSI from dc.DIM_E_IMSI_MSISDN where MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase())
+        #else
+        where
+            #if ($timerange == "TR_4")
+            #GET_DATE_RANGE_LOCAL()
+            #else
+            #GET_DATETIME_RANGE()
+            #end
+            and #GET_COLUMNS_WHERE($imsiColumn)
+        #end
+        group by
+            RAT,
+            VENDOR,
+            HIERARCHY_3,
+            HIERARCHY_2,
+            HIERARCHY_1
+        #if($velocityCount < $rawtables.size())
+        union all
+        #end
+    #end
+) as $rawview
+#end
+
+#macro (PRIVATE_CREATE_IMSI_TEMP_TABLE $IMSI_TABLES $TOPOLOGY_TABLE $TEMP_TABLE_NAME)
+    SELECT
+        *
+    INTO
+        #temp_$TEMP_TABLE_NAME
+    FROM
+        (
+    SELECT
+        RAT,
+        isnull(hier_ref.VENDOR, 'Unknown') AS VENDOR,
+        isnull(HIERARCHY_3, isnull(CAST(suc.hier3_id AS VARCHAR(20)), 'Unknown')) as HIERARCHY_3,
+        isnull(HIERARCHY_1, CAST(suc.hier321_id AS VARCHAR(20))) as HIERARCHY_1,
+        SUM(NO_OF_SUCCESSES) AS NO_OF_SUCCESSES
+    FROM
+    #PRIVATE_REPLACE_RAW_IMSI_VIEW_WITH_RAW_TABLES($IMSI_TABLES "suc" $columnsToSelectSucRaw)
+    ,    (
+        select VENDOR,HIERARCHY_3,HIER321_ID,
+        HIERARCHY_1
+        from $TOPOLOGY_TABLE
+        group by VENDOR,HIERARCHY_3,HIER321_ID, HIERARCHY_1
+     ) hier_ref
+    where
+        suc.HIER321_ID *= hier_ref.HIER321_ID
+    group by
+    RAT,
+    VENDOR,
+    HIERARCHY_3,
+    HIERARCHY_1
+    ) AS temp;
+#end
+
+begin
+#if($IMSI_SUC_LTE_TABLES.size() > 0)
+    #PRIVATE_CREATE_IMSI_TEMP_TABLE($IMSI_SUC_LTE_TABLES $LTE_TOPOLOGY_TABLE "LTE_IMSI_RAW")
+    #set($SELECT_FROM_TEMP_LTE_TABLE = "select RAT, VENDOR, HIERARCHY_3, HIERARCHY_1, sum(NO_OF_SUCCESSES) as no_of_success from #temp_LTE_IMSI_RAW    GROUP BY RAT, VENDOR, HIERARCHY_3, HIERARCHY_1")
+#else
+    #set($SELECT_FROM_TEMP_LTE_TABLE = "")
+#end
+
+#if($IMSI_SUC_SGEH_TABLES.size() > 0)
+    #PRIVATE_CREATE_IMSI_TEMP_TABLE($IMSI_SUC_SGEH_TABLES $SGEH_TOPOLOGY_TABLE "SGEH_IMSI_RAW")
+    #set($SELECT_FROM_TEMP_SGEH_TABLE = "select RAT, VENDOR, HIERARCHY_3, HIERARCHY_1, sum(NO_OF_SUCCESSES) as no_of_success from #temp_SGEH_IMSI_RAW GROUP BY RAT, VENDOR, HIERARCHY_3, HIERARCHY_1")
+#else
+    #set($SELECT_FROM_TEMP_SGEH_TABLE = "")
+#end
+
+select
+#if($count > 0)
+top $count
+#end
+sum(no_of_failures) as NO_OF_FAILURES_PER_CELL,
+sum(no_of_success) as NO_OF_SUCCESSES_PER_CELL,
+HIERARCHY_1 + ','  + ',' +
+HIERARCHY_3 + ','  +
+VENDOR + ','  +
+convert (char(1), DT.RAT)
+from
+(
+select
+RAT,
+err.VENDOR,
+HIERARCHY_3,
+HIERARCHY_1,
+sum(cnt) as no_of_failures,
+0 as no_of_success
+from
+#PRIVATE_REPLACE_RAW_ERR_VIEW_WITH_RAW_TABLES($RAW_ERR_TABLES "err" $columnsToSelect)
+group by
+RAT,
+err.VENDOR,
+HIERARCHY_3,
+HIERARCHY_1
+union all
+select
+RAT,
+VENDOR,
+HIERARCHY_3,
+HIERARCHY_1,
+0 as no_of_failures,
+sum(no_of_success) as no_of_success
+from
+(
+    $SELECT_FROM_TEMP_LTE_TABLE
+    #if($IMSI_SUC_LTE_TABLES.size() > 0 && $IMSI_SUC_SGEH_TABLES.size() > 0)
+        union all
+    #end
+    $SELECT_FROM_TEMP_SGEH_TABLE
+) as success
+group by
+RAT,
+VENDOR,
+HIERARCHY_3,
+HIERARCHY_1
+) DT
+group by
+DT.RAT,
+DT.VENDOR,
+DT.HIERARCHY_3,
+DT.HIERARCHY_1
+having
+#GET_NOT_NULL_COLUMNS_WHERE("DT" $columns)
+order by
+NO_OF_FAILURES_PER_CELL desc;
+end

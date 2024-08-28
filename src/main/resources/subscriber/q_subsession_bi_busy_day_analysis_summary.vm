@@ -1,0 +1,95 @@
+##
+## Subsession Business Intelligence - Busy day summary analysis
+##
+## Description:
+##
+##     Summary data for busy day events
+##
+## Parameter:   IMSI, groupname, DATE_TIME range, tzOffset
+
+#DEFINE_CONSTANTS()
+
+#if($groupDefinitions)
+    #set($groupDef = $groupDefinitions.get($TYPE_IMSI))
+    #set($groupTable = $groupDef.getTableName())
+    #set($groupnameColumn = $groupDef.getGroupNameColumn())
+    #set($joinKeys = $groupDef.getGroupKeys())
+    #set($isgroup=true)
+#else
+    #set($isgroup=false)
+#end
+
+#if($type==$TYPE_MSISDN)
+    #set($ismsisdn=true)
+    #set($joinKeys=["IMSI"])
+#end
+
+## resetting $RAW_ERR_TABLES & $SUC_ERR_TABLES to include 4G tables
+#set($RAW_ERR_TABLES = $techPackTables.getErrTables())
+#set($RAW_SUC_TABLES = $TECH_PACK_LIST.getAllRawTablesWithMeasurementType())
+
+begin
+
+#foreach($rawSucTable in $RAW_SUC_TABLES)
+    #if($velocityCount == 1)
+        select DATETIME_ID, sum(NO_OF_SUCCESSES) as SUC, 0 as ERR into #tmp_total
+    #else
+        insert into #tmp_total select DATETIME_ID, sum(NO_OF_SUCCESSES) as SUC, 0 as ERR
+    #end
+from dc.$rawSucTable suc
+    #if($isgroup)
+    ,dc.$groupTable groupref 
+    #elseif($ismsisdn)
+    ,dc.DIM_E_IMSI_MSISDN msisdnMap
+    #end
+where
+    #if($isgroup)
+        $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM and
+        #GET_JOIN("suc" "groupref" $joinKeys)
+    #elseif($ismsisdn)
+        #GET_JOIN("suc" "msisdnMap" $joinKeys)
+    and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+    #else
+    IMSI = :IMSI
+    #end
+group by DATETIME_ID;
+#end
+
+#foreach($rawErrTable in $RAW_ERR_TABLES)
+    insert into #tmp_total select DATETIME_ID, 0 as SUC, count(*) as ERR from dc.$rawErrTable err
+    #if($isgroup)
+    ,dc.$groupTable groupref
+    #elseif($ismsisdn)
+    ,dc.DIM_E_IMSI_MSISDN msisdnMap
+    #end
+where
+    #if($isgroup)
+        $groupnameColumn = :$ApplicationConstants.GROUP_NAME_PARAM and
+        #GET_JOIN("err" "groupref" $joinKeys)
+    #elseif($ismsisdn)
+        #GET_JOIN("err" "msisdnMap" $joinKeys)
+    and msisdnMap.MSISDN = :$ApplicationConstants.MSISDN_PARAM.toUpperCase()
+    #else
+    IMSI = :IMSI
+    #end
+group by DATETIME_ID;
+#end
+
+select
+sum(ERR) as NO_OF_FAILURES_PER_DAY,
+sum(SUC) as NO_OF_SUCCESSES_PER_DAY,
+dayname(cast (DATEADD(MINUTE, $tzOffset, DATETIME_ID) as DATE)) as DAY
+from #tmp_total
+where
+    #if($timerange=="TR_4")
+        #GET_ADJUSTED_DATETIME_RANGE()
+    #else
+        #GET_DATETIME_RANGE()
+    #end
+group by
+DAY
+order by
+DAY;
+
+drop table #tmp_total;
+end

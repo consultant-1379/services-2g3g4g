@@ -1,0 +1,267 @@
+##=============================================================================
+##
+## Event Analysis: Percentage ratio/KPI drilldown
+##
+## Description: 
+##
+## Velocity Parameters:
+##
+## type : SGSN
+##
+## drilltype : one of {SGSN, BSC, CELL}
+##
+##
+## Named Prepared Statement Parameters:
+##
+##    :dateFrom starting time
+##    :dateTo ending time
+##    :$ApplicationConstants.EVENT_ID
+##    :$SGSN
+##    :$BSC
+##    :$RAT
+##    :$VENDOR
+##    :$CELL
+##
+##=============================================================================
+
+#DEFINE_CONSTANTS()
+
+#set($time = $ApplicationMethods.returnAggregateViewType($timerange))
+
+#set($columns=[$RAT,$VENDOR,$BSC])
+#set($columnsToSelectErrorRAW=[$RAT,$VENDOR,$BSC, $IMSI])
+#set($columnsToSelectAsResult=":$SGSN as SYS_COL_$SGSN, KPI_RATIO_RESULT.RAT, VENDOR, HIERARCHY_3, RAT_DESC,:$ApplicationConstants.EVENT_ID_PARAM as  SYS_COL_$EVENT_ID, EVENT_ID_DESC, NO_OF_ERRORS, NO_OF_SUCCESSES, OCCURRENCES, KPI, NO_OF_TOTAL_ERR_SUBSCRIBERS")
+#set($conditionToSelectErrorRAW="and ${EVENT_ID} = :$ApplicationConstants.EVENT_ID_PARAM and $SGSN = :$SGSN")
+#set($agg_t_SGEH="EVENT_E_SGEH_APN_EVENTID_EVNTSRC_VEND_HIER3")
+#set($agg_t_LTE="EVENT_E_LTE_APN_EVENTID_EVNTSRC_VEND_HIER3")
+
+#set ($sucviewSGEH="${agg_t_SGEH}_SUC$time")
+#set ($sucviewLTE="${agg_t_LTE}_SUC$time")
+
+#set ($errviewSGEH="${agg_t_SGEH}_ERR$time")
+#set ($errviewLTE="${agg_t_LTE}_ERR$time")
+#set ($useExclusiveTAC="no")
+
+#if($timerange==$ApplicationConstants.DAY)
+    #set ($isday=true)
+#else
+    #set($isday=false)
+#end
+
+#macro (REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_FOR_DAY $rawTables $rawView $columns $whereClause)
+(
+    #foreach ($rawTable in $rawTables)
+    select
+        #foreach ($columnToInclude in $columns)
+            $columnToInclude
+            #if($velocityCount < $columns.size())
+            ,
+            #end
+        #end
+    from dc.$rawTable tmpTable
+    where
+        #GET_DATETIME_RANGE()
+        and #GET_TAC_EXCLUSION_BY_TABLE("tmpTable")
+        $whereClause
+    GROUP BY
+        #foreach ($columnToInclude in $columns)
+            $columnToInclude
+            #if($velocityCount < $columns.size())
+            ,
+            #end
+        #end
+        #if($velocityCount < $rawTables.size())
+        union all
+        #end
+    #end
+) as $rawView
+#end
+
+#macro (REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_FOR_DAY_WITH_LOCAL_DATE $rawTables $rawView $columns $whereClause)
+(
+    #foreach ($rawTable in $rawTables)
+    select
+        #foreach ($columnToInclude in $columns)
+            $columnToInclude
+            #if($velocityCount < $columns.size())
+            ,
+            #end
+        #end
+    from dc.$rawTable tmpTable
+    where
+        #GET_DATE_RANGE_LOCAL()
+        and #GET_TAC_EXCLUSION_BY_TABLE("tmpTable")
+        $whereClause
+    GROUP BY
+        #foreach ($columnToInclude in $columns)
+            $columnToInclude
+            #if($velocityCount < $columns.size())
+            ,
+            #end
+        #end
+        #if($velocityCount < $rawTables.size())
+        union all
+        #end
+    #end
+) as $rawView
+#end
+
+#macro(KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC_FOR_DAY $columns $networkType $aggSucTablesToUseInQuery $aggErrTablesToUseInQuery $rawErrTablesToUseInQuery $rawSucTablesToUseInQuery)
+(
+    select
+        #GET_NOT_NULL_COLUMN (["suc","err"] $columns)
+        etref.EVENT_ID_DESC ,
+        max(isnull(err.NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+        max(isnull(suc.NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+        NO_OF_ERRORS + NO_OF_SUCCESSES as OCCURRENCES,
+        #CALCULATE_KPI_RATIO() AS KPI,
+        max(isnull(err.NO_OF_TOTAL_ERR_SUBSCRIBERS,0)) as  NO_OF_TOTAL_ERR_SUBSCRIBERS
+    from
+        (
+        SELECT
+            isnull( agg_err.RAT , err_raw.RAT )                 AS RAT,
+            isnull( agg_err.VENDOR , err_raw.VENDOR )           AS VENDOR,
+            isnull( agg_err.HIERARCHY_3 , err_raw.HIERARCHY_3 ) AS HIERARCHY_3,
+            SUM(agg_err.NO_OF_ERRORS)                       AS NO_OF_ERRORS,
+            MAX(NO_OF_TOTAL_ERR_SUBSCRIBERS)
+            from (
+                    #SELECT_FROM_AGG_TABLE($conditionToSelectErrorRAW $aggErrTablesToUseInQuery "temp_agg_err" "NO_OF_ERRORS" $columns)
+                ) AS agg_err ( #GET_COLUMNS ($columns) NO_OF_ERRORS )
+                LEFT OUTER JOIN
+                (
+                select
+                    #GET_COLUMNS_BY_TABLE ("temp_err" $columns)
+                    count(distinct(IMSI))
+                from
+                #if ($timerange == "TR_4")
+                #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_FOR_DAY_WITH_LOCAL_DATE($rawErrTablesToUseInQuery "temp_err" $columnsToSelectErrorRAW $conditionToSelectErrorRAW)
+                #else
+                #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_FOR_DAY($rawErrTablesToUseInQuery "temp_err" $columnsToSelectErrorRAW $conditionToSelectErrorRAW)
+                #end
+                group by
+                #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING ("temp_err" $columns)
+                ) AS err_raw (#GET_COLUMNS ($columns)
+                    NO_OF_TOTAL_ERR_SUBSCRIBERS)
+                on (
+                #GET_JOIN("err_raw" "agg_err" $columns)
+                )
+                group by
+                    agg_err.RAT,
+                    agg_err.VENDOR,
+                    agg_err.HIERARCHY_3,
+                    err_raw.RAT,
+                    err_raw.VENDOR,
+                    err_raw.HIERARCHY_3
+        ) as err (
+               #GET_COLUMNS ($columns)
+            NO_OF_ERRORS, NO_OF_TOTAL_ERR_SUBSCRIBERS
+        )
+        full outer join
+        (
+            #SELECT_FROM_AGG_TABLE($conditionToSelectErrorRAW $aggSucTablesToUseInQuery "temp_suc" "NO_OF_SUCCESSES" $columns)
+        ) as suc (
+               #GET_COLUMNS ($columns)
+            NO_OF_SUCCESSES 
+        )
+        on (
+            #GET_JOIN("suc" "err" $columns)
+        )
+    ,DIM_E_${networkType}_EVENTTYPE etref
+    where
+        etref.EVENT_ID = :$ApplicationConstants.EVENT_ID_PARAM
+    group by
+        #GET_COLUMNS_BY_TABLE ("err" $columns)
+        #GET_COLUMNS_BY_TABLE ("suc" $columns)
+        etref.EVENT_ID_DESC
+)
+#end
+
+#macro(KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC $columns $networkType $aggSucTablesToUseInQuery $rawErrTablesToUseInQuery $rawSucTablesToUseInQuery)
+(    select
+        #GET_NOT_NULL_COLUMN (["suc","err"] $columns)
+        etref.EVENT_ID_DESC ,
+        max(isnull(err.NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+        max(isnull(suc.NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+        NO_OF_ERRORS + NO_OF_SUCCESSES as OCCURRENCES,
+        #CALCULATE_KPI_RATIO() AS KPI,
+        max(isnull(err.NO_OF_TOTAL_ERR_SUBSCRIBERS,0)) as  NO_OF_TOTAL_ERR_SUBSCRIBERS
+    from
+        (select
+            #GET_COLUMNS_BY_TABLE ("temp_err" $columns)
+            count(*),
+            count(distinct(IMSI))
+        from
+            #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_CONDITIONED($rawErrTablesToUseInQuery "temp_err" $columnsToSelectErrorRAW $conditionToSelectErrorRAW $useExclusiveTAC "")
+        group by
+            #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING ("temp_err" $columns)
+        ) as err (
+            #GET_COLUMNS ($columns)
+            NO_OF_ERRORS, 
+            NO_OF_TOTAL_ERR_SUBSCRIBERS)
+        full outer join
+        (
+            #if($timerange==$ApplicationConstants.RAW)
+                select
+                #GET_COLUMNS_BY_TABLE ("temp_suc" $columns)
+                count(*)
+                from
+                    #REPLACE_RAW_VIEW_WITH_RAW_TABLES_TAC_EXCLUSION_SPECIFY_COLUMNS_CONDITIONED($rawSucTablesToUseInQuery "temp_suc" $columnsToSelectErrorRAW $conditionToSelectErrorRAW $useExclusiveTAC "")
+                group by
+                    #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING ("temp_suc" $columns)
+            #else
+                #SELECT_FROM_AGG_TABLE($conditionToSelectErrorRAW $aggSucTablesToUseInQuery "temp_suc" "NO_OF_SUCCESSES" $columns)
+            #end
+        ) as suc (
+               #GET_COLUMNS ($columns)
+            NO_OF_SUCCESSES 
+        )
+        on (
+            #GET_JOIN("suc" "err" $columns)
+        )
+    ,DIM_E_${networkType}_EVENTTYPE etref
+    where
+        etref.EVENT_ID = :$ApplicationConstants.EVENT_ID_PARAM
+    group by
+        #GET_COLUMNS_BY_TABLE ("err" $columns)
+        #GET_COLUMNS_BY_TABLE ("suc" $columns)
+        etref.EVENT_ID_DESC
+)
+#end
+
+#macro(SELECT_FROM_AGG_TABLE $whereClause $aggTablesToUseInQuery $temp_name $colToSum $columns)    select
+        #GET_COLUMNS_BY_TABLE ($temp_name $columns)
+        sum($colToSum)
+    from
+        $aggTablesToUseInQuery $temp_name
+    where
+    #GET_DATETIME_RANGE()
+    $whereClause
+    group by
+    #GET_COLUMNS_BY_TABLE_NO_COMMA_TRAILING ($temp_name $columns)
+#end
+
+SELECT
+ #if($count > 0)
+      top $count
+ #end
+$columnsToSelectAsResult
+FROM (
+#if($isday)
+    #KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC_FOR_DAY($columns $ApplicationConstants.SGEH $sucviewSGEH $errviewSGEH $techPackTablesSGEH.getErrTables() $techPackTablesSGEH.getSucTables())
+    #if($techPackTablesLTE.getErrTables().size() > 0)
+        union all
+    #KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC_FOR_DAY($columns $ApplicationConstants.LTE $sucviewLTE $errviewLTE $techPackTablesLTE.getErrTables() $techPackTablesLTE.getSucTables())
+    #end
+#else
+    #KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC($columns $ApplicationConstants.SGEH $sucviewSGEH $techPackTablesSGEH.getErrTables() $techPackTablesSGEH.getSucTables())
+    #if($techPackTablesLTE.getErrTables().size() > 0)
+        union all
+    #KPI_RATIO_QUERY_FOR_DATA_TIERED_WITH_TAC($columns $ApplicationConstants.LTE $sucviewLTE $techPackTablesLTE.getErrTables() $techPackTablesLTE.getSucTables())
+    #end
+#end
+    ) as KPI_RATIO_RESULT
+    ,DIM_E_SGEH_RAT ratref
+WHERE
+    KPI_RATIO_RESULT.RAT = ratref.RAT
+ORDER BY
+KPI

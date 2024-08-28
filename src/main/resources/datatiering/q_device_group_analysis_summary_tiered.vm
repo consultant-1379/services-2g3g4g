@@ -1,0 +1,125 @@
+##
+## Device Analysis - device groups summary
+## See http://atrclin2.athtem.eei.ericsson.se/wiki/index.php/ENIQ_Events_Services_Design_Rules for the design rules
+## on exclusive TAC handling that apply to this query
+##
+## Description:
+##
+##     Get the nominated or most popular device groups summary
+##
+##
+## Velocity Parameter:
+##
+## AGGREGATION_TABLES : a TechPackTables object containing the Aggregation views applicable for time range
+## RAW_TABLES : a TechPackTables object containing the Raw tables applicable for this time range
+## useAggregationTables : a boolean indicating whether to use the aggregation tables or raw tables 
+## for error/success part of the query
+## count : number of the topN most popular device groups
+##
+## Named PreparedStatement Parameter:
+##
+##    :dateFrom - starting time
+##    :dateTo - ending time
+##    :groupColumn - group name
+##
+## Scenarios:
+##
+##  1. Device group summary
+##
+##     timerange
+##     :dateFrom :dateTo :groupColumn
+##
+##  2. Most popular device group summary
+## 
+##     timerange, count
+##     :dateFrom :dateTo
+##
+#DEFINE_CONSTANTS()
+#set($exclusiveTacGroup=$ApplicationConstants.EXCLUSIVE_TAC_GROUP_NAME)
+
+#macro(SUM_GROUPS_FROM_AGGREGATION_VIEW $view $columnsToSum)
+    select 
+        GROUP_NAME,
+        #foreach($column in $columnsToSum)
+            sum($column) as $column
+            #if ( $velocityCount < $columnsToSum.size())
+                    ,
+            #end
+        #end
+    from
+        $view aggview,
+        dc.GROUP_TYPE_E_TAC tacgroup
+    where
+        aggview.TAC = tacgroup.TAC
+        AND GROUP_NAME <> '$exclusiveTacGroup'
+        #AND_DATETIME_RANGE()
+    group by
+        GROUP_NAME
+#end
+
+#macro (FIND_SUM_OF_ERRORS_AND_ERR_SUBSCRIBERS_PER_TAC_GROUP_FROM_RAW_TABLE $rawtables $rawview)
+    (
+    #foreach ($rawtable in $rawtables)
+        select
+            tacgroup.GROUP_NAME,
+            rawTable.IMSI
+        from
+            dc.$rawtable as rawTable,
+            dc.GROUP_TYPE_E_TAC tacgroup
+        where
+            rawTable.TAC = tacgroup.TAC AND
+            tacgroup.GROUP_NAME <> '$exclusiveTacGroup' AND
+            #GET_DATETIME_RANGE()
+        #if($velocityCount < $rawtables.size())
+                union all
+        #end
+    #end
+    ) as $rawview
+#end
+
+
+select
+    #if($count > 0)
+        top $count
+    #end
+    rank() over (order by OCCURRENCES desc) as RANK,
+    isnull(err.GROUP_NAME, suc.GROUP_NAME) as GROUP_NAME,
+    sum(isnull(NO_OF_ERRORS, 0)) as NO_OF_ERRORS,
+    sum(isnull(NO_OF_SUCCESSES,0)) as NO_OF_SUCCESSES,
+    NO_OF_ERRORS+NO_OF_SUCCESSES as OCCURRENCES,
+    #CALCULATE_KPI_RATIO() as SUCCESS_RATIO,
+    isnull(max(err.NO_OF_TOTAL_ERR_SUBSCRIBERS),0) as NO_OF_TOTAL_ERR_SUBSCRIBERS
+from(
+    select
+        GROUP_NAME,
+        count(distinct(IMSI)),
+        COUNT(*) AS no_of_errors
+    from
+       #FIND_SUM_OF_ERRORS_AND_ERR_SUBSCRIBERS_PER_TAC_GROUP_FROM_RAW_TABLE($RAW_TABLES.getErrTables() "temp_err")
+    group by
+       GROUP_NAME
+) as err(GROUP_NAME, NO_OF_TOTAL_ERR_SUBSCRIBERS, NO_OF_ERRORS)
+full outer join(
+    select
+        GROUP_NAME,
+        sum(NO_OF_SUCCESSES) as TOTAL_NO_OF_SUCCESSES
+    from (
+        #foreach ($aggView in $AGGREGATION_TABLES.getSucTables())
+            #SUM_GROUPS_FROM_AGGREGATION_VIEW($aggView ["NO_OF_SUCCESSES"])
+
+            #if($velocityCount < $AGGREGATION_TABLES.getSucTables().size())
+                union all
+            #end
+        #end
+) as total_successes
+where NO_OF_SUCCESSES is not null
+group by
+    GROUP_NAME
+) as suc(GROUP_NAME, NO_OF_SUCCESSES)
+on(
+suc.GROUP_NAME = err.GROUP_NAME
+)
+group by
+    GROUP_NAME
+order by
+    RANK
